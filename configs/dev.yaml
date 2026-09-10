@@ -1,0 +1,15 @@
+# PC 개발용 — 고해상도, 매 프레임 검출, PyTorch 추론.
+# default.yaml을 상속하고 아래 항목만 override한다.
+
+extends: default.yaml
+
+input:
+  resolution: [640, 640]
+  fps: 15
+
+detection:
+  engine: pytorch
+  interval: 1
+
+logging:
+  level: DEBUG

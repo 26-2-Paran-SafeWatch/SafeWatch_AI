@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data — 영상·모델·개인정보 포함 가능, 절대 커밋하지 않음 (AGENTS.md 참고)
+data/raw/*
+data/processed/*
+data/models/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/models/.gitkeep
+
+# 결과물 (벤치마크 로그 등, 산출물 자체는 커밋하지 않음)
+results/*
+!results/benchmark/
+results/benchmark/*
+!results/benchmark/.gitkeep
+samples/*
+!samples/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# 환경 변수 / 시크릿
+.env
+*.local.yaml

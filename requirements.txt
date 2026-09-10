@@ -1,0 +1,18 @@
+# 객체 검출·추적 — YOLOv8n + ByteTrack(내장)
+ultralytics>=8.2,<9.0
+
+# 차선 인식·영상 처리
+opencv-python>=4.9,<5.0
+numpy>=1.26,<2.0
+
+# 추론 엔진 (Pi5 타깃 — 실측 후 onnxruntime/ncnn 중 확정)
+onnxruntime>=1.17,<2.0
+
+# 설정 관리
+pyyaml>=6.0,<7.0
+
+# 테스트
+pytest>=8.0,<9.0
+
+# --- Pi5 전용 (시스템 패키지로 별도 설치, requirements에는 포함하지 않음) ---
+# python3-picamera2 — apt로 설치 (README.md 참고)

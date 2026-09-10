@@ -1,0 +1,17 @@
+# Pi5 실기기용 — 저해상도, 검출 주기 분리, ONNX/NCNN 추론.
+# default.yaml을 상속하고 아래 항목만 override한다.
+
+extends: default.yaml
+
+input:
+  resolution: [320, 320]
+  fps: 15
+  source: camera
+
+detection:
+  engine: onnxruntime          # 실측 후 ncnn으로 변경 검토 (미결 사항, pipeline-architecture.md 5장)
+  weights: data/models/yolov8n-safewatch.onnx
+  interval: 3                  # 3프레임마다 검출, 나머지는 tracking 보간
+
+logging:
+  level: INFO

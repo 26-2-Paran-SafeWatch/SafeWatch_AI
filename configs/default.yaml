@@ -1,0 +1,64 @@
+# 공통 기본값. dev.yaml / pi5.yaml이 필요한 항목만 override한다.
+# 임계값의 근거는 docs/risk-criteria.md 참고. 코드에 값을 하드코딩하지 않는다 (AGENTS.md 원칙 2).
+
+input:
+  resolution: [640, 640]     # [width, height]
+  fps: 15
+  source: null                # CLI --source로 override (파일 경로 / "camera")
+
+detection:
+  model: yolov8n
+  weights: data/models/yolov8n.pt
+  interval: 1                 # N프레임마다 검출 실행, 중간은 tracking이 보간
+  conf_threshold: 0.5
+  engine: pytorch              # pytorch | onnxruntime | ncnn
+
+lane:
+  roi_top_ratio: 0.55          # 프레임 상단부터 ROI 시작 비율
+  canny_low: 50
+  canny_high: 150
+  lane_width_m: 3.5            # 차로 폭 캘리브레이션 기준
+  min_confidence: 0.5          # 이 미만이면 valid=False, IMU 지표만 사용
+
+tracking:
+  min_tracked_frames: 30       # 관측 충분성 조건 (pipeline-architecture.md 3.4)
+  match_thresh: 0.8
+
+metrics:
+  observation_window_sec: 10.0
+  smoothing: moving_average     # moving_average | kalman
+  smoothing_window: 5
+
+risk:
+  min_indicators: 2             # 2개 이상 지표 동시 충족 시 이벤트 생성 (NHTSA 근거)
+  observation_window_sec: 10.0
+  lane_departure:
+    offset_ratio_threshold: 0.25
+    min_duration_sec: 1.5
+  weaving:
+    min_direction_changes: 3
+  sudden_decel:
+    accel_threshold_g: -0.4
+  sudden_accel:
+    accel_threshold_g: 0.4
+  abrupt_lane_change:
+    heading_change_threshold_deg: 10.0
+  hysteresis:
+    start_score: 60
+    end_score: 40
+  cooldown_sec: 60              # 동일 차량 중복 이벤트 억제
+
+event:
+  clip_pre_sec: 10
+  clip_post_sec: 5
+  cooldown_sec: 60
+  output_dir: data/processed/events
+  queue_dir: data/processed/queue
+
+privacy:
+  blur_plates: true
+  blur_faces: true
+  blur_kernel: 31
+
+logging:
+  level: INFO
