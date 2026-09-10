@@ -231,3 +231,4 @@ Pi5 실기기 성능에 관한 판단이 필요한데 실측 데이터가 없으
 | `docs/pipeline-architecture.md` | 파이프라인 구조와 모듈 간 데이터 흐름 |
 | `docs/event-schema.md` | 이벤트 JSON 스키마 명세 (앱·서버 인터페이스) |
 | `docs/risk-criteria.md` | 위험 판단 기준과 근거 |
+| `docs/sprint-plan.md` | 8스프린트 진행 계획, 팀 협업 항목, KPI 체크리스트 |
