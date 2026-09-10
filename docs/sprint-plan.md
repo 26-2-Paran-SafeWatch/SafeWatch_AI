@@ -60,7 +60,16 @@
 ### 데이터 사전 준비
 - [ ] AI Hub 회원가입 및 필요 데이터셋 목록 작성
 - [ ] 데이터셋 이용 신청 제출 **(승인 대기 시간 있음 — 최우선)**
-- [ ] BDD100K 다운로드 경로 확인
+- [ ] BDD100K 다운로드 경로 확인 — 활용 범위는 아래 참고
+
+**BDD100K 활용 범위** (AI Hub 승인 대기 중 선행 가능, 미국 도로 데이터라 사전학습·검증용으로만 사용하고 판단 기준 검증에는 쓰지 않음)
+
+| 용도 | 내용 | 관련 스프린트 |
+|---|---|---|
+| 차량 검출 사전학습 | car/truck/bus/rider/motor 등 클래스로 YOLOv8n 선행 파인튜닝 | S1~S2 |
+| 추적 성능 검증 | MOT(Multi-Object Tracking) 서브셋으로 ByteTrack ID switching 빈도를 정량 측정 (육안 확인 대체) | S3 |
+| 차선 인식 대비책 | lane marking segmentation 라벨 보유 — OpenCV 방식이 실패해 딥러닝 전환 결정 시(`docs/pipeline-architecture.md` 미결 사항) 학습 데이터로 즉시 활용 | S3 종료 시점 |
+| 악조건 프록시 테스트 | weather(rainy/snowy)·timeofday(night/dawn-dusk) 속성 라벨 보유 — 실차 20시간 수집(S5) 전에 야간·우천 조건 검출 성능을 미리 점검 | S1~S3 |
 
 ## 산출물
 - 동작하는 개발 환경
@@ -140,7 +149,7 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 
 ### 차량 추적
 - [ ] ByteTrack 연동 (Ultralytics 내장 기능 활용)
-- [ ] track_id 유지 확인 및 ID switching 발생 빈도 측정
+- [ ] track_id 유지 확인 및 ID switching 발생 빈도 측정 — BDD100K MOT 서브셋으로 정량 측정 (S1 표 참고)
 - [ ] 최소 추적 지속 프레임 조건 적용
 
 ### lane offset 계산
@@ -151,7 +160,7 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 
 ### 데이터 확보
 - [ ] AI Hub 데이터셋 다운로드 및 구조 파악
-- [ ] BDD100K 다운로드 및 라벨 포맷 확인
+- [ ] BDD100K 라벨 포맷 확인 — lane marking segmentation 라벨은 차선 인식 딥러닝 전환 시(이번 스프린트 종료 시점 결정) 대비용으로 별도 보관 (S1 표 참고)
 - [ ] 라벨링 도구(CVAT) 설치 및 사용법 숙지
 
 ## 산출물
