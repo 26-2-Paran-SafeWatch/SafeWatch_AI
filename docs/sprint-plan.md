@@ -100,11 +100,11 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 ## 작업 목록
 
 ### 차량 검출
-- [ ] YOLOv8n 추론 래퍼 클래스 구현
-- [ ] confidence 임계값, NMS IoU 임계값 튜닝
-- [ ] 관심 영역(ROI) 설정 — 하늘·갓길 제외, 전방 차선 영역만 처리
-- [ ] 전방 차량 필터링 로직 (화면 중앙 하단 영역 우선)
-- [ ] 해상도별 처리 시간 비교 (640 / 416 / 320)
+- [x] YOLOv8n 추론 래퍼 클래스 구현 — `src/detection/detector.py`
+- [ ] confidence 임계값, NMS IoU 임계값 튜닝 — config로 분리는 완료(`detection.conf_threshold`/`iou_threshold`), 실차 영상으로 실측 튜닝은 미착수 (데이터 확보 후)
+- [x] 관심 영역(ROI) 설정 — 하늘·갓길 제외, 전방 차선 영역만 처리 — 구현 완료(`detection.roi_top_ratio`). ⚠️ 대시캠 샘플 영상이 아직 없어 실제 도로 영상으로는 미검증 (ultralytics 번들 이미지로만 코드 경로 검증)
+- [x] 전방 차량 필터링 로직 (화면 중앙 하단 영역 우선) — `detection.center_region_ratio` 기반 중앙 대역 필터, `tests/test_detector.py`로 검증
+- [x] 해상도별 처리 시간 비교 (640 / 416 / 320) — `scripts/compare_resolutions.py`. 개발 PC(Apple Silicon) 기준 640/416/320 모두 ~46~48ms(21fps 안팎)로 유의미한 차이 없음 — **Pi5 실기기 수치가 아니므로 참고용**, S6에서 재측정 필요
 
 ### 차선 인식 (기초 구현)
 - [ ] 관심 영역 설정 및 perspective transform (bird's eye view 변환)

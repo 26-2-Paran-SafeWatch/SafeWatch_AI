@@ -1,6 +1,6 @@
 """SafeWatch AI 파이프라인 진입점.
 
-현재는 스캐폴딩 단계 — INPUT 모듈만 연결되어 있고, DETECTION/LANE 이후
+현재는 스캐폴딩 단계 — INPUT·DETECTION 모듈이 연결되어 있고, LANE 이후
 단계는 아직 구현되지 않았다. 각 스프린트 진행에 따라 파이프라인을 채운다
 (docs/pipeline-architecture.md 참고).
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+from src.detection.detector import VehicleDetector
 from src.input.source import create_source
 from src.utils.config import load_config
 from src.utils.logging_setup import setup_logging
@@ -40,12 +41,24 @@ def run(config_path: str, source: str) -> None:
     frame_source = create_source(source, resolution=resolution)
     logger.info("영상 소스 시작: %s", source)
 
+    detector = VehicleDetector(cfg)
+    detection_interval = cfg.detection.interval
+
     try:
         for frame in frame_source.frames():
             with profiler.stage("input"):
                 pass  # 프레임은 이미 획득됨. 측정 대상은 향후 전처리 단계.
 
-            # TODO(S1~S3): detection → lane → tracking → metrics → risk → event
+            # 검출 주기 분리 — N프레임마다 1회 실행 (pipeline-architecture.md 3.2)
+            # TODO(S3): 중간 프레임은 TRACKING이 보간해야 하나, 아직 미구현
+            if frame.frame_id % detection_interval == 0:
+                boxes = detector.detect(frame.image)
+                if boxes:
+                    logger.debug(
+                        "frame_id=%d 검출된 차량 %d대", frame.frame_id, len(boxes)
+                    )
+
+            # TODO(S2~S3): lane → tracking → metrics → risk → event
             if frame.frame_id % 30 == 0:
                 logger.debug(
                     "frame_id=%d timestamp=%.3f", frame.frame_id, frame.timestamp

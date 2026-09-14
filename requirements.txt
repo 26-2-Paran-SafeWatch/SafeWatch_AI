@@ -2,8 +2,8 @@
 ultralytics>=8.2,<9.0
 
 # 차선 인식·영상 처리
-opencv-python>=4.9,<5.0
-numpy>=1.26,<2.0
+opencv-python>=4.9
+numpy>=1.26,<3.0
 
 # 추론 엔진 (Pi5 타깃 — 실측 후 onnxruntime/ncnn 중 확정)
 onnxruntime>=1.17,<2.0

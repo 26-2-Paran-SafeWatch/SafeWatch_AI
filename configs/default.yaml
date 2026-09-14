@@ -11,7 +11,10 @@ detection:
   weights: data/models/yolov8n.pt
   interval: 1                 # N프레임마다 검출 실행, 중간은 tracking이 보간
   conf_threshold: 0.5
+  iou_threshold: 0.45          # NMS IoU 임계값
   engine: pytorch              # pytorch | onnxruntime | ncnn
+  roi_top_ratio: 0.45          # 프레임 상단 이 비율만큼 제외 (하늘 영역)
+  center_region_ratio: 0.7     # 전방 차량 필터링 — 프레임 폭 중앙 이 비율 안의 차량만 채택
 
 lane:
   roi_top_ratio: 0.55          # 프레임 상단부터 ROI 시작 비율
