@@ -101,9 +101,11 @@ safewatch-ai/
 ├── scripts/                  # 실행 스크립트 (벤치마크, 변환, 평가)
 ├── tests/
 ├── docs/
+│   ├── system-architecture.md
 │   ├── pipeline-architecture.md
 │   ├── event-schema.md
-│   └── risk-criteria.md
+│   ├── risk-criteria.md
+│   └── sprint-plan.md
 └── data/                     # gitignore 대상
     ├── raw/
     ├── processed/
@@ -228,6 +230,7 @@ Pi5 실기기 성능에 관한 판단이 필요한데 실측 데이터가 없으
 | 문서 | 내용 |
 |---|---|
 | `README.md` | 프로젝트 개요, 설치, 실행 방법 |
+| `docs/system-architecture.md` | 전체 시스템(카메라·엣지·클라우드·앱) 컨텍스트, 이 저장소의 담당 범위 |
 | `docs/pipeline-architecture.md` | 파이프라인 구조와 모듈 간 데이터 흐름 |
 | `docs/event-schema.md` | 이벤트 JSON 스키마 명세 (앱·서버 인터페이스) |
 | `docs/risk-criteria.md` | 위험 판단 기준과 근거 |

@@ -202,6 +202,7 @@ safewatch-ai/
 | 문서 | 내용 |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | AI 코딩 에이전트용 프로젝트 규칙 |
+| [`docs/system-architecture.md`](docs/system-architecture.md) | 전체 시스템(카메라·엣지·클라우드·앱) 컨텍스트 다이어그램, 이 저장소의 담당 범위 |
 | [`docs/pipeline-architecture.md`](docs/pipeline-architecture.md) | 파이프라인 구조와 모듈 간 데이터 흐름 |
 | [`docs/event-schema.md`](docs/event-schema.md) | 이벤트 JSON 스키마 (앱·서버 인터페이스) |
 | [`docs/risk-criteria.md`](docs/risk-criteria.md) | 위험 판단 기준과 근거 |
