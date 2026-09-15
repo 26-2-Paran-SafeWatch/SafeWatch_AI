@@ -54,6 +54,11 @@ class LaneDetector:
 
         self._perspective = PerspectiveTransformer(cfg)
 
+    @property
+    def perspective(self) -> PerspectiveTransformer:
+        """시각화 등에서 bird's-eye-view ↔ 원본 좌표 변환이 필요할 때 사용."""
+        return self._perspective
+
     def detect(self, image: np.ndarray) -> LaneModel:
         with profiler.stage("lane"):
             warped = self._perspective.warp(image)
