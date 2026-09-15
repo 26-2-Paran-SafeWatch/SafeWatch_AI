@@ -107,13 +107,13 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 - [x] 해상도별 처리 시간 비교 (640 / 416 / 320) — `scripts/compare_resolutions.py`. 개발 PC(Apple Silicon) 기준 640/416/320 모두 ~46~48ms(21fps 안팎)로 유의미한 차이 없음 — **Pi5 실기기 수치가 아니므로 참고용**, S6에서 재측정 필요
 
 ### 차선 인식 (기초 구현)
-- [ ] 관심 영역 설정 및 perspective transform (bird's eye view 변환)
-- [ ] 색상·엣지 기반 차선 후보 추출 (HLS 색공간 + Canny)
-- [ ] sliding window로 차선 픽셀 탐색
-- [ ] 2차 다항식 피팅으로 차선 곡선 산출
-- [ ] 차선 인식 신뢰도 지표 산출 (피팅 잔차, 좌우 차선 평행도)
-- [ ] 차선 미검출 구간 처리 (직전 프레임 값 유지 또는 판단 보류)
-- [ ] 샘플 영상으로 검출 결과 검증
+- [x] 관심 영역 설정 및 perspective transform (bird's eye view 변환) — `src/lane/perspective.py`. ⚠️ `src_points_ratio`는 placeholder, 카메라 확정 후 재캘리브레이션 필요
+- [x] 색상·엣지 기반 차선 후보 추출 (HLS 색공간 + Canny) — `src/lane/lane_detector.py::_binarize`
+- [x] sliding window로 차선 픽셀 탐색 — `_sliding_window`
+- [x] 2차 다항식 피팅으로 차선 곡선 산출 — `_safe_polyfit` (np.polyfit, 실패 시 None)
+- [x] 차선 인식 신뢰도 지표 산출 (좌우 평행도 + 검출 픽셀 수 기반) — `_compute_confidence`. 피팅 잔차는 아직 반영 안 함
+- [x] 차선 미검출/저신뢰 구간 처리 — **판단 보류 방식으로 결정** (직전 프레임 값 유지 아님): `valid=False` 반환, 상위 로직이 offset 지표 제외 (pipeline-architecture.md 3.3 폴백 경로와 일치)
+- [ ] 샘플 영상으로 검출 결과 검증 — ⚠️ 실제 대시캠 영상이 없어 미검증. 합성 이미지(흰 직선 2개)로 알고리즘 정확성만 단위 테스트로 확인 (`tests/test_lane_detector.py`)
 
 ### 판단 기준 근거 조사
 - [ ] 한국교통안전공단 11대 위험운전행동 판별 기준 조사 및 정리
