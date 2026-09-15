@@ -1,8 +1,8 @@
 """SafeWatch AI 파이프라인 진입점.
 
-현재는 스캐폴딩 단계 — INPUT·DETECTION 모듈이 연결되어 있고, LANE 이후
-단계는 아직 구현되지 않았다. 각 스프린트 진행에 따라 파이프라인을 채운다
-(docs/pipeline-architecture.md 참고).
+현재는 스캐폴딩 단계 — INPUT·DETECTION·LANE 모듈이 연결되어 있고,
+TRACKING 이후 단계는 아직 구현되지 않았다. 각 스프린트 진행에 따라
+파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
 
 사용법
     python -m src.main --config configs/dev.yaml --source data/raw/sample.mp4
@@ -16,6 +16,7 @@ import logging
 
 from src.detection.detector import VehicleDetector
 from src.input.source import create_source
+from src.lane.lane_detector import LaneDetector
 from src.utils.config import load_config
 from src.utils.logging_setup import setup_logging
 from src.utils.profiler import profiler
@@ -43,6 +44,7 @@ def run(config_path: str, source: str) -> None:
 
     detector = VehicleDetector(cfg)
     detection_interval = cfg.detection.interval
+    lane_detector = LaneDetector(cfg)
 
     try:
         for frame in frame_source.frames():
@@ -58,7 +60,14 @@ def run(config_path: str, source: str) -> None:
                         "frame_id=%d 검출된 차량 %d대", frame.frame_id, len(boxes)
                     )
 
-            # TODO(S2~S3): lane → tracking → metrics → risk → event
+            lane = lane_detector.detect(frame.image)
+            if not lane.valid and frame.frame_id % 30 == 0:
+                logger.debug(
+                    "frame_id=%d 차선 신뢰도 미달(%.2f) — offset 지표 제외",
+                    frame.frame_id, lane.confidence,
+                )
+
+            # TODO(S3): tracking → metrics → risk → event
             if frame.frame_id % 30 == 0:
                 logger.debug(
                     "frame_id=%d timestamp=%.3f", frame.frame_id, frame.timestamp

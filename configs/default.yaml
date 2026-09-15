@@ -21,7 +21,21 @@ lane:
   canny_low: 50
   canny_high: 150
   lane_width_m: 3.5            # 차로 폭 캘리브레이션 기준
-  min_confidence: 0.5          # 이 미만이면 valid=False, IMU 지표만 사용
+  min_confidence: 0.5          # 이 미만이면 valid=False, IMU 지표만 사용 (판단 보류)
+  perspective:
+    # bird's eye view 변환용 사다리꼴 ROI 네 꼭짓점 (프레임 비율 좌표, [x, y])
+    # 좌상단 → 우상단 → 우하단 → 좌하단 순서.
+    # ⚠️ placeholder 값 — 카메라 장착 위치·화각 확정 후 재캘리브레이션 필요
+    #    (pipeline-architecture.md 5장 "카메라 캘리브레이션 절차" 미결 사항)
+    src_points_ratio: [[0.43, 0.62], [0.57, 0.62], [0.90, 0.95], [0.10, 0.95]]
+    warp_size: [640, 720]      # bird's eye view 출력 해상도 [width, height]
+  color_threshold:
+    s_channel_thresh: [170, 255]   # HLS S채널 — 채도 높은 차선(황색 등) 검출
+    l_channel_thresh: [200, 255]   # HLS L채널 — 밝은 흰색 차선 검출
+  sliding_window:
+    n_windows: 9                # 세로 분할 윈도우 개수
+    margin: 80                  # 윈도우 좌우 폭(px)
+    min_pixels: 50               # 윈도우 재중심 갱신에 필요한 최소 픽셀 수
 
 tracking:
   min_tracked_frames: 30       # 관측 충분성 조건 (pipeline-architecture.md 3.4)
