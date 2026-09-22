@@ -8,7 +8,7 @@
 2. 색상(HLS S/L 채널) + 엣지(Canny) 기반 차선 후보 픽셀 추출
 3. sliding window로 좌/우 차선 픽셀 탐색
 4. 2차 다항식 피팅
-5. 신뢰도 산출 — 좌우 평행도 + 검출 픽셀 수
+5. 신뢰도 산출 — 피팅 잔차 + 좌우 평행도 + 검출 픽셀 수
 
 폴백 — 신뢰도가 `lane.min_confidence` 미만이거나 피팅 자체가 실패하면
 `valid=False`를 반환한다. 이 경우 직전 프레임 값을 유지하지 않고 상위
@@ -43,6 +43,13 @@ class LaneDetector:
         self._canny_high: int = lane_cfg.canny_high
         self._min_confidence: float = lane_cfg.min_confidence
 
+        conf_cfg = lane_cfg.confidence
+        self._max_residual_ratio: float = conf_cfg.max_residual_ratio
+        weights = conf_cfg.weights
+        self._w_residual: float = weights.residual
+        self._w_parallel: float = weights.parallel
+        self._w_pixel: float = weights.pixel
+
         color_cfg = lane_cfg.color_threshold
         self._s_thresh = tuple(color_cfg.s_channel_thresh)
         self._l_thresh = tuple(color_cfg.l_channel_thresh)
@@ -60,38 +67,49 @@ class LaneDetector:
         return self._perspective
 
     def detect(self, image: np.ndarray) -> LaneModel:
+        """원본 프레임을 bird's eye view로 변환한 뒤 차선을 인식한다."""
         with profiler.stage("lane"):
-            warped = self._perspective.warp(image)
-            binary = self._binarize(warped)
-            leftx, lefty, rightx, righty = self._sliding_window(binary)
+            return self.detect_bev(self._perspective.warp(image))
 
-            left_fit = self._safe_polyfit(lefty, leftx)
-            right_fit = self._safe_polyfit(righty, rightx)
-            if left_fit is None or right_fit is None:
-                return _INVALID
+    def detect_bev(self, warped: np.ndarray) -> LaneModel:
+        """이미 bird's eye view로 변환된 이미지에서 차선을 인식한다.
 
-            confidence = self._compute_confidence(
-                binary.shape, left_fit, right_fit, leftx, rightx
-            )
-            if confidence < self._min_confidence:
-                return LaneModel(
-                    left_fit=np.poly1d(left_fit),
-                    right_fit=np.poly1d(right_fit),
-                    lane_width_px=None,
-                    curvature_radius=None,
-                    confidence=confidence,
-                    valid=False,
-                )
+        perspective 변환을 분리해 둔 것은, 카메라 캘리브레이션이 확정되기 전
+        (`configs/default.yaml`의 `src_points_ratio`가 placeholder) 변환 품질과
+        무관하게 인식 알고리즘 자체를 검증할 수 있게 하기 위해서다.
+        """
+        binary = self._binarize(warped)
+        leftx, lefty, rightx, righty = self._sliding_window(binary)
 
-            lane_width_px = self._lane_width_px(binary.shape[0], left_fit, right_fit)
+        left_fit = self._safe_polyfit(lefty, leftx)
+        right_fit = self._safe_polyfit(righty, rightx)
+        if left_fit is None or right_fit is None:
+            return _INVALID
+
+        confidence, residual_ratio = self._compute_confidence(
+            binary.shape, left_fit, right_fit, leftx, lefty, rightx, righty
+        )
+        if confidence < self._min_confidence:
             return LaneModel(
                 left_fit=np.poly1d(left_fit),
                 right_fit=np.poly1d(right_fit),
-                lane_width_px=lane_width_px,
-                curvature_radius=None,  # TODO: RISK에서 필요해지면 산출
+                lane_width_px=None,
+                curvature_radius=None,
                 confidence=confidence,
-                valid=True,
+                valid=False,
+                fit_residual_ratio=residual_ratio,
             )
+
+        lane_width_px = self._lane_width_px(binary.shape[0], left_fit, right_fit)
+        return LaneModel(
+            left_fit=np.poly1d(left_fit),
+            right_fit=np.poly1d(right_fit),
+            lane_width_px=lane_width_px,
+            curvature_radius=None,  # TODO: RISK에서 필요해지면 산출
+            confidence=confidence,
+            valid=True,
+            fit_residual_ratio=residual_ratio,
+        )
 
     def _binarize(self, image: np.ndarray) -> np.ndarray:
         hls = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
@@ -167,23 +185,59 @@ class LaneDetector:
         left_fit: np.ndarray,
         right_fit: np.ndarray,
         leftx: np.ndarray,
+        lefty: np.ndarray,
         rightx: np.ndarray,
-    ) -> float:
+        righty: np.ndarray,
+    ) -> tuple[float, float | None]:
+        """신뢰도와 잔차 비율을 함께 반환한다.
+
+        잔차 비율은 신뢰도 산출의 입력이자 튜닝용 관측값이므로 밖으로 내보낸다.
+        좌우 차선이 역전된 경우에는 차로 폭이 음수라 비율을 정의할 수 없어 None이다.
+        """
         height, _ = shape
         y_eval = np.array([0, height // 2, height - 1])
         widths = np.polyval(right_fit, y_eval) - np.polyval(left_fit, y_eval)
 
         if np.any(widths <= 0):
-            return 0.0  # 좌우 차선이 교차/역전 — 명백한 오검출
+            return 0.0, None  # 좌우 차선이 교차/역전 — 명백한 오검출
+
+        mean_width = float(np.mean(widths))
+
+        # 피팅 잔차 — 차선 픽셀이 피팅된 곡선에서 얼마나 흩어져 있는지.
+        # 차로 폭으로 정규화해 해상도·warp 크기가 바뀌어도 같은 기준이 유지되게 한다.
+        # 상한을 넘으면 선이 아니라 면(보도블록 등 노면 텍스처)을 피팅한 것으로 보고
+        # 명백한 오검출로 처리한다 — 좌우 역전과 같은 취급. 근거는 configs/default.yaml 주석.
+        residual_ratio = max(
+            self._rms_residual(fit, xs, ys)
+            for fit, xs, ys in ((left_fit, leftx, lefty), (right_fit, rightx, righty))
+        ) / mean_width
+
+        if residual_ratio > self._max_residual_ratio:
+            return 0.0, round(residual_ratio, 4)
+
+        residual_score = 1.0 - residual_ratio / self._max_residual_ratio
 
         # 평행도 — 세 지점에서의 폭 변동 계수(CV)가 작을수록 두 차선이 평행에 가깝다
-        width_cv = float(np.std(widths) / np.mean(widths))
+        width_cv = float(np.std(widths) / mean_width)
         parallel_score = max(0.0, 1.0 - width_cv * 2)
 
-        # 픽셀 수 — min_pixels의 6배에서 만점 포화
+        # 픽셀 수 — min_pixels의 6배에서 만점 포화.
+        # ⚠️ 이 항은 노면 텍스처처럼 픽셀이 과도하게 많은 오검출에서도 만점이 나와
+        #    오탐을 걸러내지 못한다 (S2 보도블록 사례에서 확인). 상한 쪽 페널티가
+        #    필요한지는 실차 영상 확보 후 판단한다.
         pixel_score = min(1.0, (len(leftx) + len(rightx)) / (self._min_pixels * 6))
 
-        return round(0.5 * parallel_score + 0.5 * pixel_score, 3)
+        confidence = (
+            self._w_residual * residual_score
+            + self._w_parallel * parallel_score
+            + self._w_pixel * pixel_score
+        )
+        return round(confidence, 3), round(residual_ratio, 4)
+
+    @staticmethod
+    def _rms_residual(fit: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> float:
+        """차선 픽셀과 피팅 곡선 사이의 RMS 거리(px, x축 방향)."""
+        return float(np.sqrt(np.mean((xs - np.polyval(fit, ys)) ** 2)))
 
     def _lane_width_px(
         self, height: int, left_fit: np.ndarray, right_fit: np.ndarray
