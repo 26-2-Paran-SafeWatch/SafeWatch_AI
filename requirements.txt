@@ -1,5 +1,8 @@
 # 객체 검출·추적 — YOLOv8n + ByteTrack(내장)
 ultralytics>=8.2,<9.0
+# ByteTrack의 헝가리안 매칭에 필요. ultralytics가 실행 중에 자동 설치를
+# 시도하지만, Pi5에서 네트워크 없이 구동할 수 있어야 하므로 명시한다.
+lap>=0.5.12
 
 # 차선 인식·영상 처리
 opencv-python>=4.9

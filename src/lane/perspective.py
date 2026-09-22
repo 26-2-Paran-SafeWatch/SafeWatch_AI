@@ -38,6 +38,23 @@ class PerspectiveTransformer:
             self._build_matrix(width, height)
         return cv2.warpPerspective(image, self._M, self._warp_size)
 
+    def warp_points(self, points: np.ndarray) -> np.ndarray:
+        """원본 프레임 좌표(Nx2)를 bird's-eye-view 좌표로 변환한다.
+
+        차량 위치(검출 박스 하단 중심)를 차선 다항식과 같은 좌표계로 옮길 때
+        쓴다 — 차선 모델은 BEV 좌표계에 있고 검출 박스는 원본 프레임
+        좌표계에 있다 (METRICS, pipeline-architecture.md 3.5).
+        """
+        if self._M is None:
+            raise RuntimeError("warp()를 먼저 호출해야 warp_points()를 쓸 수 있습니다.")
+        pts = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
+        return cv2.perspectiveTransform(pts, self._M).reshape(-1, 2)
+
+    @property
+    def warp_size(self) -> tuple[int, int]:
+        """(width, height) — BEV 좌표 범위 검사에 사용한다."""
+        return self._warp_size
+
     def unwarp_points(self, points: np.ndarray) -> np.ndarray:
         """bird's-eye-view 좌표(Nx2)를 원본 프레임 좌표로 역변환한다.
 

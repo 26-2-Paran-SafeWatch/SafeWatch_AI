@@ -165,17 +165,20 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 - [ ] 신뢰도 지표 임계값 튜닝 — 낮을 때 offset 기반 지표 제외하는 폴백 경로 연결. 현재 값(`lane.confidence`: 잔차 상한 8%, 가중치 0.4/0.35/0.25)은 합성 데이터 기준 초안이므로 실차 영상으로 재측정한다. 픽셀 수 항목의 상한 페널티 필요 여부도 함께 판단 (`pipeline-architecture.md` 3.3)
 
 ### 차량 추적
-- [ ] ByteTrack 연동 (Ultralytics 내장 기능 활용)
-- [ ] track_id 유지 확인 및 ID switching 발생 빈도 측정 — BDD100K MOT 서브셋으로 정량 측정 (S1 표 참고)
-- [ ] 최소 추적 지속 프레임 조건 적용
+- [x] ByteTrack 연동 (Ultralytics 내장 기능 활용) — `src/tracking/tracker.py`. `model.track()`이 아니라 내장 `BYTETracker`에 검출 결과를 직접 물리는 방식 (모듈 경계 + 검출 주기 분리 유지, `pipeline-architecture.md` 3.4)
+- [x] track_id 유지 확인 — 합성 검출 박스 기준 `tests/test_tracker.py`로 검증. ⚠️ **ID switching 빈도 정량 측정은 미완** — BDD100K MOT 서브셋 확보 후 수행
+- [x] 최소 추적 지속 프레임 조건 적용 — `tracked_frames` 누적 및 `min_tracked_frames` 노출. 게이팅 자체는 RISK가 수행(S4)
+- [ ] ⚠️ 검출 주기 분리(`interval > 1`) 시 칼만 시간 축 문제 — S6로 이월 (`pipeline-architecture.md` 5장)
 
 ### lane offset 계산
-- [ ] 차량 bounding box 하단 중심점을 차량 위치로 정의
-- [ ] 해당 y좌표에서의 차선 중심 좌표 산출
-- [ ] 픽셀 거리 → 실거리(m) 변환 (차로 폭 3.5m 기준 캘리브레이션)
-- [ ] 차량별 offset 시계열 버퍼 구현 (최근 10초 유지)
-- [ ] 횡방향 속도(offset 시간 미분) 산출 — 스웨빙·표류 판정용 (`risk-criteria.md` 2.6)
+- [x] 차량 bounding box 하단 중심점을 차량 위치로 정의 — `VehicleBox.bottom_y`
+- [x] 해당 y좌표에서의 차선 중심 좌표 산출 — 차량 위치를 BEV로 변환 후 비교 (`PerspectiveTransformer.warp_points` 신설)
+- [x] 픽셀 거리 → 실거리(m) 변환 (차로 폭 3.5m 기준 캘리브레이션) — 해당 y에서의 차로 폭으로 정규화 후 `lane_width_m` 적용
+- [x] 차량별 offset 시계열 버퍼 구현 (최근 10초 유지) — `VehicleTimeSeries`, 차량 소멸 시 해제
+- [x] 횡방향 속도(offset 시간 미분) 산출 — 스웨빙·표류 판정용 (`risk-criteria.md` 2.6). 평활화 창 길이를 기준선으로 쓰는 기울기 방식
 - [ ] bbox 크기 변화율 기반 상대속도 추정 실현 가능성 확인 — "속도 불규칙" 단서 채택 여부 결정용
+- [ ] **자차 거동 보상(IMU) 미구현** — IMU 입력 경로 자체가 없음. 아래 팀 협업 항목 선행 필요
+- [ ] **곡선 도로 보정 미구현** — 차선 중심선을 그대로 기준선으로 사용 중. 곡선 구간 오탐 위험 (S4)
 
 ### 데이터 확보
 - [ ] AI Hub 데이터셋 구조 파악 — 소규모 서브셋만 받아 확인 (본격 다운로드는 S5, S1 표 참고)
@@ -189,6 +192,8 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 
 ## 완료 조건
 전방 차량의 lane offset 값이 프레임마다 수치로 출력된다. 차량이 화면에서 사라지기 전까지 동일한 track_id가 유지된다.
+
+**진행 상황 (2026-09-22)** — 합성 데이터 기준으로는 충족. 합성 도로(BEV 평행 차선을 역변환해 생성)에서 차로 중심 배치 시 offset +0.008m, 우측 25% 배치 시 +0.879m(기대 0.875m)로 좌표계 연결까지 검증했다(`tests/test_pipeline_integration.py`). **실제 대시캠 영상으로는 여전히 미검증** — 데이터 확보가 이 스프린트의 남은 병목이다.
 
 ## 팀 협업 항목
 - **강섬희** — IMU 데이터 포맷 및 전송 주기 협의. 영상 프레임과의 시간 동기화 방식 결정 (타임스탬프 기준). 스코프 변경 후 IMU는 자차 거동 보정용, GPS 속도는 60km/h 게이팅용

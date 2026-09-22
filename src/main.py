@@ -1,7 +1,8 @@
 """SafeWatch AI 파이프라인 진입점.
 
-현재는 스캐폴딩 단계 — INPUT·DETECTION·LANE 모듈이 연결되어 있고,
-TRACKING 이후 단계는 아직 구현되지 않았다. 각 스프린트 진행에 따라
+현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS.
+RISK 이후(판정·이벤트 생성)는 판단 기준 확정 대기 중이라 미구현이다
+(docs/risk-criteria.md 1.4, 지도교수 확인 후 S4). 각 스프린트 진행에 따라
 파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
 
 사용법
@@ -17,6 +18,8 @@ import logging
 from src.detection.detector import VehicleDetector
 from src.input.source import create_source
 from src.lane.lane_detector import LaneDetector
+from src.metrics.offset import OffsetCalculator
+from src.tracking.tracker import VehicleTracker
 from src.utils.config import load_config
 from src.utils.logging_setup import setup_logging
 from src.utils.profiler import profiler
@@ -45,33 +48,47 @@ def run(config_path: str, source: str) -> None:
     detector = VehicleDetector(cfg)
     detection_interval = cfg.detection.interval
     lane_detector = LaneDetector(cfg)
+    tracker = VehicleTracker(cfg)
+    # METRICS는 차선 모델과 같은 BEV 좌표계에서 차량 위치를 봐야 하므로
+    # LANE이 쓰는 perspective 변환기를 공유한다.
+    offset_calculator = OffsetCalculator(cfg, lane_detector.perspective)
 
     try:
         for frame in frame_source.frames():
             with profiler.stage("input"):
                 pass  # 프레임은 이미 획득됨. 측정 대상은 향후 전처리 단계.
 
-            # 검출 주기 분리 — N프레임마다 1회 실행 (pipeline-architecture.md 3.2)
-            # TODO(S3): 중간 프레임은 TRACKING이 보간해야 하나, 아직 미구현
+            # 검출 주기 분리 — N프레임마다 1회 실행 (pipeline-architecture.md 3.2).
+            # ⚠️ interval > 1은 아직 실사용 대상이 아니다. interpolate()가 위치를
+            #    전진시키지 않아 횡방향 속도가 왜곡된다 (S6 항목, tracker.py 참고).
             if frame.frame_id % detection_interval == 0:
                 boxes = detector.detect(frame.image)
-                if boxes:
-                    logger.debug(
-                        "frame_id=%d 검출된 차량 %d대", frame.frame_id, len(boxes)
-                    )
+                tracks = tracker.update(boxes)
+            else:
+                tracks = tracker.interpolate()
 
+            # LANE을 먼저 돌려야 perspective 행렬이 만들어져 METRICS가 좌표를
+            # 변환할 수 있다.
             lane = lane_detector.detect(frame.image)
             if not lane.valid and frame.frame_id % 30 == 0:
                 logger.debug(
-                    "frame_id=%d 차선 신뢰도 미달(%.2f) — offset 지표 제외",
-                    frame.frame_id, lane.confidence,
+                    "frame_id=%d 차선 신뢰도 미달(%.2f, 잔차 %s) — offset 지표 제외",
+                    frame.frame_id, lane.confidence, lane.fit_residual_ratio,
                 )
 
-            # TODO(S3): tracking → metrics → risk → event
-            if frame.frame_id % 30 == 0:
-                logger.debug(
-                    "frame_id=%d timestamp=%.3f", frame.frame_id, frame.timestamp
-                )
+            series = offset_calculator.update(tracks, lane, frame.timestamp)
+
+            # TODO(S4): risk → event. 판단 기준 확정 후 착수 (risk-criteria.md 1.4)
+            if frame.frame_id % 30 == 0 and series:
+                for track_id, ts in series.items():
+                    latest = ts.latest
+                    if latest is None:
+                        continue
+                    logger.debug(
+                        "frame_id=%d track=%d offset=%.2fm(%.1f%%) v_lat=%.2fm/s n=%d",
+                        frame.frame_id, track_id, latest.offset_m,
+                        latest.offset_ratio * 100, latest.lateral_velocity_mps, len(ts),
+                    )
     except KeyboardInterrupt:
         logger.info("중단 요청 수신, 종료합니다.")
     finally:

@@ -58,7 +58,15 @@ lane:
 
 tracking:
   min_tracked_frames: 30       # 관측 충분성 조건 (pipeline-architecture.md 3.4)
-  match_thresh: 0.8
+  # 아래는 ultralytics 내장 BYTETracker에 그대로 전달하는 값이다.
+  # ultralytics 기본값(cfg/trackers/bytetrack.yaml)을 출발점으로 두고,
+  # ID switching 빈도를 BDD100K MOT 서브셋으로 측정하며 조정한다 (sprint-plan.md S3).
+  track_high_thresh: 0.25      # 1차 매칭에 쓸 검출 신뢰도 하한
+  track_low_thresh: 0.1        # 2차 매칭(가려짐 복구)용 하한
+  new_track_thresh: 0.25       # 새 track 생성 기준 — 높일수록 허위 track 감소
+  track_buffer: 30             # lost track 유지 프레임 수. 앞차에 가려지는 구간을 버틴다
+  match_thresh: 0.8            # IoU 기반 연관 임계값
+  fuse_score: true             # 검출 점수를 매칭 비용에 반영
 
 metrics:
   observation_window_sec: 10.0
