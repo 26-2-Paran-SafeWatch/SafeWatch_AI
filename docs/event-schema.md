@@ -1,9 +1,9 @@
 # 이벤트 JSON 스키마 명세
 
-**버전** 0.3 (협의 중)
+**버전** 0.4 (협의 중 — 스코프 변경에 따른 `risk.types`·`indicators` 변경 제안 포함, 5.1)
 **작성** 설만수 (AI 파트)
 **협의 대상** 주민규 (앱·서버 파트)
-**최종 수정** 2026-09-14
+**최종 수정** 2026-09-22
 
 ---
 
@@ -136,6 +136,8 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 
 **이 목록은 고정한다.** 새 유형 추가 시 양측 합의 후 문서를 갱신한다.
 
+> ⚠️ **변경 제안 있음 (v0.4, 협의 대기)** — AI 파트 스코프가 음주운전 의심 차량 감지로 축소되어, 위 허용값 중 `sudden_decel`·`sudden_accel`·`abrupt_lane_change` 제거와 `swerving`·`drifting` 추가를 제안한다. **합의 전까지 위 표가 유효하다.** 5.1 참고.
+
 ---
 
 ### 3.3 `indicators` — 판단 근거 수치
@@ -150,6 +152,8 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 | `observation_window_sec` | float | 초 | 판단에 사용된 관측 구간 길이 |
 | `longitudinal_accel_peak_g` | float | g | 종방향 가속도 최댓값 (음수는 감속) |
 | `heading_change_deg` | float | 도 | 방위각 변화량 |
+
+> ⚠️ **변경 제안 있음 (v0.4, 협의 대기)** — `longitudinal_accel_peak_g`·`heading_change_deg`는 자차 IMU 지표라 판정에서 빠지므로 제거를, 스웨빙·표류용 `lateral_velocity_peak_mps`·`drift_duration_sec` 추가를 제안한다. 5.1 참고.
 
 **필수 여부**
 
@@ -257,6 +261,37 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 | 6 | 누락 필드 | 앱에 추가로 필요한 정보 확인 | 앱·서버 |
 | 7 | 클립 사양 | 해상도·코덱·최대 용량 제한 | 양측 |
 | 8 | 메타/클립 join | C안 채택 시 메타데이터-클립 도착 시차(수 시간 가능) 동안 "클립 없는 이벤트"를 앱에 어떻게 표시할지 | 앱·서버 |
+| 9 | **스코프 변경 반영** | `risk.types`·`indicators` 변경안(5.1) 수용 여부, 앱 표기 문구("음주운전 의심 거동") | 양측 |
+
+### 5.1 스코프 변경에 따른 변경 제안 (v0.4, 협의 대기)
+
+2026-09-22 지도교수 면담으로 AI 파트 감지 대상이 **음주운전 의심 차량**으로 축소되었다 (`docs/risk-criteria.md` v0.4). 판단 근거가 NHTSA 차로 유지 단서로 좁혀지고, IMU는 판정 지표에서 빠져 자차 거동 보정용으로만 쓰인다. 이에 따른 스키마 변경을 제안한다. **AI 파트 내부에서도 단서 범위와 출력 형태가 아직 제안안이므로, 지도교수 확인(S3 초반) 후 확정안으로 다시 공유한다.**
+
+**`risk.types` 허용값**
+
+| 값 | 제안 | 사유 |
+|---|---|---|
+| `lane_departure` | 유지 | 의미를 NHTSA "차선 걸침(straddling)"으로 좁힘. 이름은 호환을 위해 유지 |
+| `weaving` | 유지 | NHTSA 사행 |
+| `swerving` | **추가** | NHTSA 스웨빙 — 급격한 횡이동 후 복귀 |
+| `drifting` | **추가** | NHTSA 표류 — 한 방향으로 느린 횡이동 지속 |
+| `sudden_decel` | **제거** | 자차 IMU 지표 — 앞차 음주 판별 단서 아님 |
+| `sudden_accel` | **제거** | 동일 |
+| `abrupt_lane_change` | **제거** | 교통안전공단 자차 기준 — 스코프 밖 |
+| (`speed_irregular`) | 보류 | 영상 기반 상대속도 추정의 실현 가능성을 S3에서 확인한 뒤 결정 |
+
+**`indicators`**
+
+| 필드 | 제안 | 단위 |
+|---|---|---|
+| `lane_offset_max_ratio`, `lane_departure_duration_sec`, `direction_changes_count`, `observation_window_sec` | 유지 | — |
+| `lateral_velocity_peak_mps` | **추가** | m/s — 관측 구간 내 최대 횡방향 속도 (스웨빙) |
+| `drift_duration_sec` | **추가** | 초 — 한 방향 횡이동 지속 시간 (표류) |
+| `longitudinal_accel_peak_g`, `heading_change_deg` | **제거** | 자차 지표 |
+
+**`risk.score` / `level`** — 제안안은 필드를 그대로 두고 의미만 "음주 의심 점수"로 바꾸는 것이다. AI 파트가 이진 판정으로 가면 이 두 필드도 바뀌므로, 그 경우 다시 협의한다.
+
+**영향 받는 산출물** — `scripts/generate_dummy_event.py`의 유형 목록과 `configs/default.yaml`의 `risk` 섹션은 합의 후 함께 수정한다 (지금은 v0.3 기준 그대로).
 
 ---
 
@@ -279,3 +314,4 @@ python scripts/generate_dummy_event.py --count 10 --output samples/
 | 0.1 | 2026-09-10 | 초안 작성. 앱·서버 파트 협의 대기 |
 | 0.2 | 2026-09-14 | HW 파트 전체 시스템 아키텍처(`system-architecture.md`) 반영 — 전송 방식에 C안(메타 LTE 즉시/클립 WiFi 지연) 추가, 서버 파트 확인 필요 항목으로 갱신 |
 | 0.3 | 2026-09-15 | HW 파트 이벤트 발생 시퀀스 반영 — `event_id`가 중복 제거뿐 아니라 메타/클립 join 역할도 함을 명시, 협의 필요 8번(메타/클립 join 중 클립 없는 이벤트 표시) 추가 |
+| 0.4 | 2026-09-22 | AI 파트 스코프 변경(음주운전 의심 차량 감지) — 5.1 변경 제안 신설(`risk.types`: swerving·drifting 추가, sudden_decel·sudden_accel·abrupt_lane_change 제거 / `indicators`: 횡방향 속도·표류 지속시간 추가, 자차 IMU 지표 제거), 협의 필요 9번 추가. 합의 전까지 3장 본문 유지 |

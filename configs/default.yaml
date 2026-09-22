@@ -21,7 +21,7 @@ lane:
   canny_low: 50
   canny_high: 150
   lane_width_m: 3.5            # 차로 폭 캘리브레이션 기준
-  min_confidence: 0.5          # 이 미만이면 valid=False, IMU 지표만 사용 (판단 보류)
+  min_confidence: 0.5          # 이 미만이면 valid=False → 해당 구간 판정 보류 (IMU 단독 폴백은 스코프 변경으로 폐지)
   perspective:
     # bird's eye view 변환용 사다리꼴 ROI 네 꼭짓점 (프레임 비율 좌표, [x, y])
     # 좌상단 → 우상단 → 우하단 → 좌하단 순서.
@@ -47,6 +47,10 @@ metrics:
   smoothing_window: 5
 
 risk:
+  # ⚠️ 스코프 변경(2026-09-22, 음주운전 의심 차량 감지) — risk-criteria.md v0.4 기준으로는
+  #    sudden_decel / sudden_accel / abrupt_lane_change가 제외되고 swerving / drifting이 추가된다.
+  #    단서 범위가 지도교수 확인 전 제안안이고 event-schema.md 5.1 협의도 남아 있어, 아래 키는 확정 후 함께 수정한다.
+  #    이 섹션을 쓰는 판정 로직(src/risk)은 아직 미구현이다.
   min_indicators: 2             # 2개 이상 지표 동시 충족 시 이벤트 생성 (NHTSA 근거)
   observation_window_sec: 10.0
   lane_departure:
