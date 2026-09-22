@@ -73,6 +73,12 @@ def draw_lane(image: np.ndarray, lane: LaneModel, lane_detector: LaneDetector) -
     status = f"lane valid={lane.valid} conf={lane.confidence:.2f}"
     cv2.putText(image, status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
+    # 잔차 비율 — 신뢰도가 왜 그렇게 나왔는지 바로 보이게 함께 표시한다.
+    # 상한을 넘으면 선이 아니라 노면 텍스처를 피팅한 것이다 (lane.confidence.max_residual_ratio)
+    if lane.fit_residual_ratio is not None:
+        residual = f"fit residual={lane.fit_residual_ratio:.3f} (of lane width)"
+        cv2.putText(image, residual, (20, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
 
 def process_frame(
     image: np.ndarray, detector: VehicleDetector, lane_detector: LaneDetector
