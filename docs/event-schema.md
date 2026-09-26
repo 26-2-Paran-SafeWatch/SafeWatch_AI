@@ -1,6 +1,6 @@
 # 이벤트 JSON 스키마 명세
 
-**버전** 0.5 (협의 중 — 스코프 변경에 따른 `risk.types`·`indicators` 변경안 AI 파트 확정, 서버 파트 협의 대기)
+**버전** 0.6 (협의 중 — `risk.types`·`indicators` 변경안에 `speed_irregular` 포함해 AI 파트 확정, 서버 파트 협의 대기)
 **작성** 설만수 (AI 파트)
 **협의 대상** 주민규 (앱·서버 파트)
 **최종 수정** 2026-09-22
@@ -278,7 +278,7 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 | `sudden_decel` | **제거** | 자차 IMU 지표 — 앞차 음주 판별 단서 아님 |
 | `sudden_accel` | **제거** | 동일 |
 | `abrupt_lane_change` | **제거** | 교통안전공단 자차 기준 — 스코프 밖 |
-| (`speed_irregular`) | 보류 | 영상 기반 상대속도 추정의 실현 가능성을 S3에서 확인한 뒤 결정 |
+| `speed_irregular` | **추가 (2026-09-26 채택 확정)** | bbox 팽창률(1/TTC) 기반. lane offset과 독립적인 신호 — `risk-criteria.md` 1.4.1 |
 
 **`indicators`**
 
@@ -287,11 +287,12 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 | `lane_offset_max_ratio`, `lane_departure_duration_sec`, `direction_changes_count`, `observation_window_sec` | 유지 | — |
 | `lateral_velocity_peak_mps` | **추가** | m/s — 관측 구간 내 최대 횡방향 속도 (스웨빙) |
 | `drift_duration_sec` | **추가** | 초 — 한 방향 횡이동 지속 시간 (표류) |
+| `expansion_rate_peak_per_sec` | **추가 (2026-09-26)** | 1/s — 관측 구간 내 최대 bbox 팽창률(e), 역수가 최소 TTC(속도 불규칙) |
 | `longitudinal_accel_peak_g`, `heading_change_deg` | **제거** | 자차 지표 |
 
 **`risk.score` / `level`** — 필드는 그대로 두고 의미만 "음주 의심 점수"로 바꾼다. 이진 판정 대안은 채택하지 않기로 확정되어(2026-09-26) 필드 구조 변경은 없다.
 
-**영향 받는 산출물** — `scripts/generate_dummy_event.py`의 유형 목록과 `configs/default.yaml`의 `risk` 섹션은 서버 파트 합의 후 함께 수정한다 (지금은 v0.3 기준 그대로).
+**영향 받는 산출물** — `configs/default.yaml`의 `risk` 섹션은 AI 파트 내부 임계값이라 스코프 확정에 맞춰 지금 갱신했다(서버 합의와 무관하게 AI 판단 로직 자체에 필요). 반면 `scripts/generate_dummy_event.py`의 이벤트 JSON 유형 목록은 **서버로 나가는 실제 필드명이라 서버 파트 합의 후** 함께 수정한다 (지금은 v0.3 기준 그대로).
 
 ---
 
@@ -316,3 +317,4 @@ python scripts/generate_dummy_event.py --count 10 --output samples/
 | 0.3 | 2026-09-15 | HW 파트 이벤트 발생 시퀀스 반영 — `event_id`가 중복 제거뿐 아니라 메타/클립 join 역할도 함을 명시, 협의 필요 8번(메타/클립 join 중 클립 없는 이벤트 표시) 추가 |
 | 0.4 | 2026-09-22 | AI 파트 스코프 변경(음주운전 의심 차량 감지) — 5.1 변경 제안 신설(`risk.types`: swerving·drifting 추가, sudden_decel·sudden_accel·abrupt_lane_change 제거 / `indicators`: 횡방향 속도·표류 지속시간 추가, 자차 IMU 지표 제거), 협의 필요 9번 추가. 합의 전까지 3장 본문 유지 |
 | 0.5 | 2026-09-26 | 5.1 변경안이 지도교수 확인을 거쳐 AI 파트 확정안으로 전환(단서 범위·출력 형태 `risk-criteria.md` v0.7). 서버 파트(주민규) 수용 여부만 남음 — 3장 본문은 여전히 미변경 |
+| 0.6 | 2026-09-26 | `speed_irregular`(bbox 팽창률 기반, `risk-criteria.md` 1.4.1/v0.9) 채택 확정 — 5.1의 `risk.types`·`indicators` 표에 반영(`expansion_rate_peak_per_sec` 신규). AI 파트 내부 config(`configs/default.yaml`)는 서버 합의와 무관하게 지금 갱신, 서버로 나가는 JSON 필드명 확정은 여전히 협의 대기 |
