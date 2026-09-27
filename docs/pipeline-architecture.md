@@ -152,6 +152,8 @@ class VehicleBox:
 
 **성능 예산** 50ms (검출 수행 프레임 기준)
 
+**파인튜닝 라벨 클래스 매핑 (2026-09-27, AI Hub 도로주행영상 라벨 분석)** — `VEHICLE_CLASS_IDS = {2, 3, 5, 7}`(car/motorcycle/bus/truck, `src/detection/detector.py`)가 이미 차종 구분 없이 "차량"으로 단일 취급하고, `class_id`는 TRACKING(ByteTrack) 내부 처리 외에는 RISK·METRICS·EVENT 어디에서도 참조되지 않는다. 이 시스템에 차종 분류는 애초에 불필요하다는 뜻이므로, AI Hub 라벨의 `Vehicle_Car`/`Vehicle_Bus`/`Vehicle_Motorcycle`/`Vehicle_Unknown`은 파인튜닝 시 **전부 단일 `vehicle` 클래스로 병합**한다. `Vehicle_Unknown`(bb 기준 15,273건, 전체 차량 라벨의 약 22%)을 제외할 근거를 찾기 위해 bbox 크기를 `Vehicle_Car`와 비교했으나 중앙값이 거의 동일해(70px vs 68px, 원거리 소형 객체라서 분류 불가였다는 가설과 불일치) 크기 기반 제외 근거도 없었다 — 그래서 배제하지 않고 포함한다. `pg`(폴리곤) 카테고리의 차량 라벨은 bbox가 아니므로 파인튜닝에 쓰려면 외접 사각형으로 변환하는 과정이 별도로 필요하다.
+
 ---
 
 ### 3.3 LANE — 차선 인식
