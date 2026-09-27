@@ -126,6 +126,7 @@ class OffsetCalculator:
                 lateral_velocity_mps=self._lateral_velocity(series, smoothed_m, timestamp),
                 lane_confidence=lane_confidence,
                 is_interpolated=track.is_interpolated,
+                bbox_height=track.box.y2 - track.box.y1,
             )
         )
         self._trim(series.offsets, timestamp)

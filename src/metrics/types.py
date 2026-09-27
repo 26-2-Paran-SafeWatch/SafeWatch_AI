@@ -8,6 +8,10 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
+import numpy as np
+
+from src.metrics.relative_motion import rolling_expansion_rate
+
 
 @dataclass
 class OffsetSample:
@@ -17,6 +21,16 @@ class OffsetSample:
     lateral_velocity_mps: float  # 평활화된 offset의 시간 미분 (risk-criteria.md 2.6)
     lane_confidence: float
     is_interpolated: bool        # 검출 없이 추적만으로 채워진 프레임인지
+    bbox_height: float | None = None
+    """검출 박스 높이(px). "속도 불규칙" 단서(bbox 팽창률, risk-criteria.md 1.4.1)
+    산출에 쓰인다.
+
+    ⚠️ **알려진 한계** — 이 값은 lane offset과 무관한 신호라 원래는 차선 인식
+    실패 구간에서도 계속 기록되어야 하지만(1.4 "독립 신호" 근거), 현재
+    `OffsetCalculator`는 `lane.valid`일 때만 샘플을 추가하므로 이 필드도 그
+    시점에만 채워진다. 즉 지금 구현에서는 차선 인식이 실패하면 속도 불규칙
+    지표도 함께 멈춘다 — 독립성의 이점이 아직 완전히 살지 않는다. 차선과
+    무관하게 항상 기록하도록 분리하는 것은 후속 작업이다."""
 
 
 @dataclass
@@ -52,6 +66,23 @@ class VehicleTimeSeries:
         if not self.offsets:
             return 0.0
         return max(abs(s.lateral_velocity_mps) for s in self.offsets)
+
+    def peak_expansion_rate(self, window: int) -> float | None:
+        """길이 `window`인 슬라이딩 윈도우로 구한 bbox 팽창률의 최대 절댓값.
+
+        "속도 불규칙" 단서 산출용 (risk-criteria.md 1.4.1). `bbox_height`가
+        기록된 샘플이 `window`개 미만이면 판단할 수 없어 None을 반환한다
+        (bbox_height의 알려진 한계는 `OffsetSample` docstring 참고).
+        """
+        samples = [s for s in self.offsets if s.bbox_height is not None]
+        if len(samples) < window:
+            return None
+
+        timestamps = np.array([s.timestamp for s in samples])
+        heights = np.array([s.bbox_height for s in samples])
+        rates = rolling_expansion_rate(timestamps, heights, window)
+        valid = rates[~np.isnan(rates)]
+        return float(np.max(np.abs(valid))) if valid.size else None
 
     @property
     def observed_duration_sec(self) -> float:
