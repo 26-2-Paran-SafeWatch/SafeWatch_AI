@@ -1,6 +1,6 @@
 # 이벤트 JSON 스키마 명세
 
-**버전** 0.6 (협의 중 — `risk.types`·`indicators` 변경안에 `speed_irregular` 포함해 AI 파트 확정, 서버 파트 협의 대기)
+**버전** 0.7 (협의 중 — 5.1 제안을 실제 구현(`src/event/builder.py`)에 반영, 서버 파트 협의는 여전히 대기)
 **작성** 설만수 (AI 파트)
 **협의 대상** 주민규 (앱·서버 파트)
 **최종 수정** 2026-09-22
@@ -292,7 +292,7 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 
 **`risk.score` / `level`** — 필드는 그대로 두고 의미만 "음주 의심 점수"로 바꾼다. 이진 판정 대안은 채택하지 않기로 확정되어(2026-09-26) 필드 구조 변경은 없다.
 
-**영향 받는 산출물** — `configs/default.yaml`의 `risk` 섹션은 AI 파트 내부 임계값이라 스코프 확정에 맞춰 지금 갱신했다(서버 합의와 무관하게 AI 판단 로직 자체에 필요). 반면 `scripts/generate_dummy_event.py`의 이벤트 JSON 유형 목록은 **서버로 나가는 실제 필드명이라 서버 파트 합의 후** 함께 수정한다 (지금은 v0.3 기준 그대로).
+**영향 받는 산출물** — `configs/default.yaml`의 `risk` 섹션은 AI 파트 내부 임계값이라 스코프 확정에 맞춰 지금 갱신했다(서버 합의와 무관하게 AI 판단 로직 자체에 필요). `scripts/generate_dummy_event.py`와 `src/event/builder.py`(실제 이벤트 메타데이터 생성 로직, S4)도 **이제 이 5.1 제안을 구현한다** (2026-09-27) — 서버·앱 파트가 구체적인 예시 JSON을 보고 수용 여부를 판단할 수 있도록 먼저 구현해 공유하는 편이 낫다고 보았다. **다만 이는 서버 파트 최종 합의를 대체하지 않는다** — 2·3장 본문은 합의 전까지 의도적으로 이전 스냅샷을 유지하며, 합의가 끝나면 본문을 이 구현에 맞춰 갱신한다.
 
 ---
 
@@ -318,3 +318,4 @@ python scripts/generate_dummy_event.py --count 10 --output samples/
 | 0.4 | 2026-09-22 | AI 파트 스코프 변경(음주운전 의심 차량 감지) — 5.1 변경 제안 신설(`risk.types`: swerving·drifting 추가, sudden_decel·sudden_accel·abrupt_lane_change 제거 / `indicators`: 횡방향 속도·표류 지속시간 추가, 자차 IMU 지표 제거), 협의 필요 9번 추가. 합의 전까지 3장 본문 유지 |
 | 0.5 | 2026-09-26 | 5.1 변경안이 지도교수 확인을 거쳐 AI 파트 확정안으로 전환(단서 범위·출력 형태 `risk-criteria.md` v0.7). 서버 파트(주민규) 수용 여부만 남음 — 3장 본문은 여전히 미변경 |
 | 0.6 | 2026-09-26 | `speed_irregular`(bbox 팽창률 기반, `risk-criteria.md` 1.4.1/v0.9) 채택 확정 — 5.1의 `risk.types`·`indicators` 표에 반영(`expansion_rate_peak_per_sec` 신규). AI 파트 내부 config(`configs/default.yaml`)는 서버 합의와 무관하게 지금 갱신, 서버로 나가는 JSON 필드명 확정은 여전히 협의 대기 |
+| 0.7 | 2026-09-27 | `src/event/builder.py`(실제 이벤트 메타데이터 생성 로직)와 `scripts/generate_dummy_event.py`가 5.1 제안을 구현하도록 갱신 — 서버 합의 전이지만 구체적 예시로 협의를 진행하기 위함. 2·3장 본문은 여전히 의도적으로 미변경 |

@@ -1,9 +1,11 @@
 """SafeWatch AI 파이프라인 진입점.
 
-현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS · RISK.
-EVENT(클립 추출·전송)는 링 버퍼 인터페이스가 HW 파트와 아직 협의 중이라
-미구현이다 (docs/system-architecture.md "아직 남은 것"). 각 스프린트
-진행에 따라 파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
+현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS · RISK ·
+EVENT(메타데이터만). 이벤트 발생 시 JSON 메타데이터는 만들어 로그로
+남기지만, **영상 클립 추출·전송은 아직 없다** — 링 버퍼 요청 인터페이스가
+HW 파트와 협의 중이라 미구현이다 (docs/system-architecture.md "아직
+남은 것"). 각 스프린트 진행에 따라 파이프라인을 채운다
+(docs/pipeline-architecture.md 참고).
 
 **GPS 속도 미연결** — RISK의 `lane_departure`는 자차 속도 게이팅(LDWS
 60km/h 근거, risk-criteria.md 1.3)이 필요한데 GPS 입력 자체가 아직
@@ -19,9 +21,11 @@ GPS가 실제로 연결되기 전까지 절대 충족되지 않는다.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 
 from src.detection.detector import VehicleDetector
+from src.event.builder import EventIdGenerator, build_event_metadata
 from src.input.source import create_source
 from src.lane.lane_detector import LaneDetector
 from src.metrics.offset import OffsetCalculator
@@ -60,6 +64,7 @@ def run(config_path: str, source: str) -> None:
     # LANE이 쓰는 perspective 변환기를 공유한다.
     offset_calculator = OffsetCalculator(cfg, lane_detector.perspective)
     risk_scorer = RiskScorer(cfg)
+    event_id_generator = EventIdGenerator(cfg.event.device_id)
 
     try:
         for frame in frame_source.frames():
@@ -96,12 +101,23 @@ def run(config_path: str, source: str) -> None:
                     track, ts, lane_valid=lane.valid, timestamp=frame.timestamp, ego_speed_kmh=None
                 )
                 if assessment.should_emit_event:
-                    logger.info(
-                        "frame_id=%d track=%d 음주운전 의심 거동 감지 — score=%d level=%s types=%s",
-                        frame.frame_id, track.track_id, assessment.score,
-                        assessment.level, assessment.types,
+                    event = build_event_metadata(
+                        event_id=event_id_generator.next(frame.timestamp),
+                        device_id=cfg.event.device_id,
+                        timestamp=frame.timestamp,
+                        assessment=assessment,
+                        series=ts,
+                        track=track,
+                        cfg=cfg,
+                        model_version=cfg.event.model_version,
+                        rule_version=cfg.event.rule_version,
+                        # location·clip은 GPS·링 버퍼 미연결로 아직 없음 (build_event_metadata docstring)
                     )
-                    # TODO(S4): event 모듈로 전달 — 링 버퍼 요청 인터페이스 확정 후 (system-architecture.md)
+                    logger.info(
+                        "frame_id=%d 음주운전 의심 거동 감지 — %s",
+                        frame.frame_id, json.dumps(event, ensure_ascii=False),
+                    )
+                    # TODO(S4): 클립 요청(링 버퍼)·전송 큐 적재 — HW 인터페이스 확정 후
                 elif frame.frame_id % 30 == 0:
                     logger.debug(
                         "frame_id=%d track=%d offset=%.2fm(%.1f%%) v_lat=%.2fm/s score=%d",
