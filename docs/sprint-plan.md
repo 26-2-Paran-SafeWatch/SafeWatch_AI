@@ -235,9 +235,9 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 - [x] **쿨다운** — `cooldown_sec` 동안 동일 차량 재발생 억제, `tests/test_risk_scorer.py`로 검증
 
 ### 이벤트 출력
-- [ ] 이벤트 발생 시 전후 구간 클립 추출 (전 10초 + 후 5초)
-- [ ] 확정된 JSON 스키마로 이벤트 데이터 생성
-- [ ] 로컬 이벤트 큐 구현 (전송 실패 대비 Store-and-Forward)
+- [ ] 이벤트 발생 시 전후 구간 클립 추출 (전 10초 + 후 5초) — **블록됨**, 링 버퍼 요청 인터페이스 HW 협의 대기
+- [x] JSON 이벤트 메타데이터 생성 — **완료 (2026-09-27)**, `src/event/builder.py` + `EventIdGenerator`, `main.py`에 연결. `location`/`clip`은 GPS·링버퍼 미연결로 생략. 스키마는 AI 파트 확정안(5.1) 기준 — 서버 최종 합의는 별개
+- [ ] 로컬 이벤트 큐 구현 (전송 실패 대비 Store-and-Forward) — 업로드 큐 구현 주체가 아직 미정(system-architecture.md)이라 보류
 
 ## 산출물
 - 위험 판단 모듈 (`risk_scorer.py`)

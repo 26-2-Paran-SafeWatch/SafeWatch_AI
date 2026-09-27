@@ -129,6 +129,9 @@ event:
   cooldown_sec: 60
   output_dir: data/processed/events
   queue_dir: data/processed/queue
+  device_id: safewatch-dev-001         # 실기기 배포 시 고유 ID로 교체 (event-schema.md 3.1)
+  model_version: yolov8n-safewatch-unfinetuned   # S5 파인튜닝 전까지는 사전학습 가중치 그대로임을 명시
+  rule_version: risk-v0.10-dui-scope             # risk-criteria.md 버전과 맞춰 수동 갱신
 
 privacy:
   blur_plates: true
