@@ -81,6 +81,13 @@
 
 **AI Hub 다운로드 시점** — 신청(승인 요청)은 지금 하되, **실제 파일 다운로드는 S5(9~10주차) 파인튜닝 착수 시점까지 미룬다.** 전체 코퍼스는 수백GB~175TB 규모라 로컬에 받을 이유가 없다. (1) GPU 클라우드가 정해지면 그 인스턴스에 직접 받고, (2) 처음엔 시나리오/날짜별로 선택 가능한 서브셋(수천~수만 장)만 받아 파이프라인 검증 후 필요하면 확장한다.
 
+**다운로드 방법** (승인 완료 후에만 가능) — 웹 브라우저로 파일 목록에서 zip을 개별 클릭해 받을 수도 있지만, 데이터셋이 원본/부위(bb·fs·pg·sl 등)/도로 유형별로 잘게 쪼개진 수십~수백 개 zip으로 구성돼 있어(예: 도로주행영상 = 8개 조합 × Training/Validation) 서브셋만 고를 거면 **`aihubshell`(공식 CLI) 사용을 권장**:
+1. AI Hub 로그인 후 API Key 발급(마이페이지)
+2. `curl -o aihubshell https://api.aihub.or.kr/api/aihubshell.do && chmod +x aihubshell`
+3. `aihubshell -mode l -datasetkey <dataSetSn>` 으로 파일별 filekey 조회
+4. `aihubshell -aihubapikey <키> -mode d -datasetkey <dataSetSn> -filekey <filekey1,filekey2,...>` 로 필요한 zip만 선택 다운로드 (filekey 생략 시 전체 다운로드)
+분할 압축(.zip.part*)으로 내려오므로 리눅스(또는 WSL)에서 `cat`으로 병합 후 압축 해제 필요.
+
 **BDD100K 활용 범위** (AI Hub 승인 대기 중 선행 가능, 미국 도로 데이터라 사전학습·검증용으로만 사용하고 판단 기준 검증에는 쓰지 않음)
 
 | 용도 | 내용 | 관련 스프린트 |
