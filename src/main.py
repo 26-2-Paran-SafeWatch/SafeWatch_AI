@@ -1,9 +1,15 @@
 """SafeWatch AI 파이프라인 진입점.
 
-현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS.
-RISK 이후(판정·이벤트 생성)는 판단 기준 확정 대기 중이라 미구현이다
-(docs/risk-criteria.md 1.4, 지도교수 확인 후 S4). 각 스프린트 진행에 따라
-파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
+현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS · RISK.
+EVENT(클립 추출·전송)는 링 버퍼 인터페이스가 HW 파트와 아직 협의 중이라
+미구현이다 (docs/system-architecture.md "아직 남은 것"). 각 스프린트
+진행에 따라 파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
+
+**GPS 속도 미연결** — RISK의 `lane_departure`는 자차 속도 게이팅(LDWS
+60km/h 근거, risk-criteria.md 1.3)이 필요한데 GPS 입력 자체가 아직
+없다(HW 파트 확인 대기, pipeline-architecture.md 미결 사항). 지금은 항상
+`ego_speed_kmh=None`을 넘겨 안전하게 판단 보류시킨다 — 즉 lane_departure는
+GPS가 실제로 연결되기 전까지 절대 충족되지 않는다.
 
 사용법
     python -m src.main --config configs/dev.yaml --source data/raw/sample.mp4
@@ -19,6 +25,7 @@ from src.detection.detector import VehicleDetector
 from src.input.source import create_source
 from src.lane.lane_detector import LaneDetector
 from src.metrics.offset import OffsetCalculator
+from src.risk.scorer import RiskScorer
 from src.tracking.tracker import VehicleTracker
 from src.utils.config import load_config
 from src.utils.logging_setup import setup_logging
@@ -52,6 +59,7 @@ def run(config_path: str, source: str) -> None:
     # METRICS는 차선 모델과 같은 BEV 좌표계에서 차량 위치를 봐야 하므로
     # LANE이 쓰는 perspective 변환기를 공유한다.
     offset_calculator = OffsetCalculator(cfg, lane_detector.perspective)
+    risk_scorer = RiskScorer(cfg)
 
     try:
         for frame in frame_source.frames():
@@ -78,16 +86,28 @@ def run(config_path: str, source: str) -> None:
 
             series = offset_calculator.update(tracks, lane, frame.timestamp)
 
-            # TODO(S4): risk → event. 판단 기준 확정 후 착수 (risk-criteria.md 1.4)
-            if frame.frame_id % 30 == 0 and series:
-                for track_id, ts in series.items():
-                    latest = ts.latest
-                    if latest is None:
-                        continue
+            risk_scorer.sync({t.track_id for t in tracks})
+            for track in tracks:
+                ts = series.get(track.track_id)
+                if ts is None:
+                    continue
+                # GPS 미연결 상태 — 위 모듈 docstring 참고. lane_departure는 항상 판단 보류된다.
+                assessment = risk_scorer.assess(
+                    track, ts, lane_valid=lane.valid, timestamp=frame.timestamp, ego_speed_kmh=None
+                )
+                if assessment.should_emit_event:
+                    logger.info(
+                        "frame_id=%d track=%d 음주운전 의심 거동 감지 — score=%d level=%s types=%s",
+                        frame.frame_id, track.track_id, assessment.score,
+                        assessment.level, assessment.types,
+                    )
+                    # TODO(S4): event 모듈로 전달 — 링 버퍼 요청 인터페이스 확정 후 (system-architecture.md)
+                elif frame.frame_id % 30 == 0:
                     logger.debug(
-                        "frame_id=%d track=%d offset=%.2fm(%.1f%%) v_lat=%.2fm/s n=%d",
-                        frame.frame_id, track_id, latest.offset_m,
-                        latest.offset_ratio * 100, latest.lateral_velocity_mps, len(ts),
+                        "frame_id=%d track=%d offset=%.2fm(%.1f%%) v_lat=%.2fm/s score=%d",
+                        frame.frame_id, track.track_id, ts.latest.offset_m,
+                        ts.latest.offset_ratio * 100, ts.latest.lateral_velocity_mps,
+                        assessment.score,
                     )
     except KeyboardInterrupt:
         logger.info("중단 요청 수신, 종료합니다.")

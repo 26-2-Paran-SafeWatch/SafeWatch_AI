@@ -102,7 +102,21 @@ risk:
 
   speed_irregular:                # bbox 팽창률 기반 (신규 채택, 2026-09-26, risk-criteria.md 1.4.1)
     expansion_rate_threshold_per_sec: 0.25   # TTC≈4초. 실현가능성 검증에서 e≥0.2가 잡음과 안정적으로 분리됨을 확인
-    min_duration_sec: 1.0                    # 검증에 쓴 슬라이딩 윈도우(15프레임@15fps)와 동일
+    window_sec: 1.0                          # 팽창률 추정용 슬라이딩 윈도우 — 실현가능성 검증에 쓴 값(15프레임@15fps)과 동일
+
+  # 지표별 가중치 — 합이 1.0. 실차 데이터로 오탐률을 측정하며 조정한다(sprint-plan.md S4~S7).
+  # 근거 자료가 아직 없어 5개 동일 가중치로 초기화했다 — 실측 전까지는 이 균등 배분 자체가 초안이다.
+  weights:
+    lane_departure: 0.2       # [TBD]
+    weaving: 0.2              # [TBD]
+    swerving: 0.2             # [TBD]
+    drifting: 0.2             # [TBD]
+    speed_irregular: 0.2      # [TBD]
+
+  # 등급 매핑 — 점수 구간의 삼등분. 근거 없는 초안이며 실측 후 조정 대상 (risk-criteria.md 3.3).
+  level_thresholds:
+    medium: 40    # 이상이면 medium
+    high: 70      # 이상이면 high (미만 medium, 그 아래 low)
 
   hysteresis:
     start_score: 60               # [TBD]
