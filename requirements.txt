@@ -13,10 +13,17 @@ numpy>=1.26,<3.0
 
 # 추론 엔진 (Pi5 타깃 — 실측 후 onnxruntime/ncnn 중 확정)
 onnxruntime>=1.17,<2.0
-# 모델 변환 (개발 PC 전용, scripts/export_model.py) — Pi5는 위 onnxruntime만 있으면
-# 변환된 .onnx 파일을 그대로 실행할 수 있어 아래 둘은 Pi5에 설치하지 않는다.
+# 모델 변환 (개발 PC 전용, scripts/export_model.py) — Pi5는 변환된 결과물(.onnx
+# 파일 또는 NCNN param/bin)만 실행하면 되므로 아래 넷은 Pi5에 설치하지 않는다.
 onnx>=1.16
 onnxslim>=0.1
+# NCNN 변환 — onnx2ncnn이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환한다
+# (scripts/export_model.py의 export_ncnn 참고). pnnx는 ultralytics 자체가
+# "20260704부터 NCNN 추론 세그폴트 버그 있음"이라며 20260526에 고정해 두는
+# 버전이라(ultralytics.utils.export.ncnn) 그대로 맞춘다 — ultralytics 업그레이드
+# 시 이 핀도 같이 확인할 것.
+ncnn>=1.0
+pnnx==20260526
 
 # 설정 관리
 pyyaml>=6.0,<7.0

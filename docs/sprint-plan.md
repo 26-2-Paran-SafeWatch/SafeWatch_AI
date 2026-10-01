@@ -341,7 +341,7 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 
 ### 모델 경량화
 - [x] ONNX 변환 및 동작 검증 — **스크립트·개발 PC 검증 완료 (2026-10-01)**, `scripts/export_model.py --format onnx`. 사전학습 가중치(`yolov8n.pt`)로 640/320 두 해상도 모두 export→onnxruntime 로드→`src/main.py` 전체 파이프라인 통합까지 에러 없이 확인. ⚠️ **Pi5 실기기 동작·속도 검증은 여전히 남음** — 이 결과는 전부 개발 PC(Apple Silicon) 수치라 Pi5 성능으로 단정하지 않는다(AGENTS.md "불확실할 때" 원칙). 파인튜닝(S5) 후에는 같은 스크립트를 그 가중치로 다시 돌리면 됨
-- [ ] NCNN 변환 및 동작 검증 — 미착수. `onnx2ncnn` 추가 의존성 확인 필요
+- [x] NCNN 변환 및 동작 검증 — **스크립트·개발 PC 검증 완료 (2026-10-01)**, `scripts/export_model.py --format ncnn`. 예상과 달리 `onnx2ncnn`이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환(ONNX를 거치지 않는 별도 경로) — 추가 의존성은 `ncnn`·`pnnx` 두 파이썬 패키지뿐이라 우려보다 가벼웠음. 640/320 두 해상도 모두 export→`YOLO(경로).predict()` 로드 검증→`src/main.py` 전체 파이프라인 통합까지 에러 없이 확인. `--fp16` 옵션도 동작 확인(파일 크기 12.1MB→6.1MB). ⚠️ Pi5 실기기 검증은 여전히 남음 — 이번 세션 수치는 전부 개발 PC(Apple Silicon, ARM이긴 하나 Pi5와 코어·클럭·캐시가 다름) 기준
 - [ ] INT8 양자화 적용 및 정확도 손실 측정
 - [ ] 추론 엔진별 성능 비교 (PyTorch / ONNX / NCNN, FP32 / FP16 / INT8)
 - [ ] **양자화가 실제로 이득인지 실측 확인** — 이득 없으면 FP32 유지
