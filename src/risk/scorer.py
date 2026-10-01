@@ -9,11 +9,16 @@ lane offset 시계열 기반)와 속도 불규칙(bbox 팽창률 기반, 독립 
 3. `min_indicators` 결합 판정 + 가중 합산 점수
 4. 히스테리시스 + 쿨다운으로 이벤트 발생 여부 결정
 
-**구현되지 않은 게이팅 (risk-criteria.md 4.1)** — 프레임 품질(블러·밝기 급변)
-검사와 유효 관측 거리(bbox 면적) 검사는 이 모듈에 아직 없다. 둘 다
-`docs/risk-criteria.md`에서도 여전히 `[TBD]`라 임의로 수치를 만들어 넣지
-않았다 — 근거 없는 임계값을 코드에 박아넣지 않는다는 원칙(AGENTS.md 3)에
-따른 것이다.
+**구현되지 않은 게이팅 (risk-criteria.md 4.1)** — 유효 관측 거리(bbox 면적)
+검사는 이 모듈에 아직 없다. 임계값이 카메라 해상도·장착 각도에 의존하는데
+카메라 마운트 사양이 아직 HW 파트와 확정되지 않아(system-architecture.md
+"아직 남은 것"), 근거 없는 임계값을 코드에 박아넣지 않는다는 원칙
+(AGENTS.md 3)에 따라 보류한다. **프레임 품질(블러·밝기 급변) 게이팅은
+`src/risk/frame_quality.py`(`FrameQualityChecker`)로 구현했다** — 이
+항목은 카메라 해상도와 무관한 일반적인 컴퓨터 비전 기법(Laplacian 분산,
+평균 밝기 변화량)이라 데이터셋·카메라 확정을 기다릴 필요가 없었다
+(2026-10-01). 호출부(main.py)가 프레임마다 한 번 계산해 `assess()`의
+`frame_quality_ok` 인자로 넘긴다.
 
 **알려진 단순화**
 - 스웨빙·표류 판정은 [TBD] 임계값을 전제로 한 1차 근사 로직이다. 정확한
@@ -61,6 +66,7 @@ class RiskScorer:
         lane_valid: bool,
         timestamp: float,
         ego_speed_kmh: float | None = None,
+        frame_quality_ok: bool = True,
     ) -> RiskAssessment:
         """차량 한 대의 이번 프레임 위험 판단 결과를 낸다.
 
@@ -71,13 +77,18 @@ class RiskScorer:
             ego_speed_kmh: 자차 GPS 속도. None(미수신)이면 속도 게이팅이
                 필요한 지표(차선 걸침)는 안전하게 판단 보류한다 — 신뢰할
                 수 없는 입력으로 판단하지 않는다는 원칙(risk-criteria.md 4.1).
+            frame_quality_ok: `FrameQualityChecker.check()` 결과. False면
+                이번 프레임은 블러·밝기 급변으로 신뢰할 수 없어 모든 지표를
+                판단 보류한다(risk-criteria.md 4.1 "프레임 품질").
         """
         with profiler.stage("risk"):
             indicators: dict[str, float] = {}
             matched: list[str] = []
 
-            # --- 1. 입력 신뢰도 게이팅 (구현된 부분만) ---
-            sufficiently_observed = track.tracked_frames >= self._min_tracked_frames
+            # --- 1. 입력 신뢰도 게이팅 (유효 관측 거리 제외 — scorer.py 모듈 docstring 참고) ---
+            sufficiently_observed = (
+                frame_quality_ok and track.tracked_frames >= self._min_tracked_frames
+            )
 
             if sufficiently_observed and lane_valid:
                 if self._check_lane_departure(series, ego_speed_kmh, indicators):
