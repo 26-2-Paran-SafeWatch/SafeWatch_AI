@@ -1,3 +1,6 @@
+# 개발 PC(Mac/Linux/Windows)용 전체 의존성 — 파인튜닝·모델 변환·테스트까지 포함한다.
+# Pi5 배포용 최소 의존성은 requirements-pi5.txt 참고 (모델 변환 도구·pytest 제외).
+
 # 객체 검출·추적 — YOLOv8n + ByteTrack(내장)
 ultralytics>=8.2,<9.0
 # ByteTrack의 헝가리안 매칭에 필요. ultralytics가 실행 중에 자동 설치를

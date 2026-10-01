@@ -1,6 +1,6 @@
 # 파이프라인 구조 설계서
 
-**버전** 0.13 (ONNX·NCNN export 구현)
+**버전** 0.14 (GPS/IMU 입력 경로 인터페이스 구현)
 **작성** 설만수
 **최종 수정** 2026-10-01
 
@@ -477,7 +477,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 | **검출 주기 분리 시 칼만 시간 축** | ByteTrack의 칼만 필터는 `update()` 1회당 1프레임 경과를 가정한다. N프레임마다 검출하면 실제로는 N프레임이 지났는데 1프레임만 예측해 속도 추정이 1/N로 축소된다. 횡방향 속도(risk-criteria.md 2.6)가 이 값에 의존하므로 그냥 둘 수 없다. 선택지 — (a) 검출 안 한 프레임에도 `multi_predict()`만 호출해 시간 축을 맞춤, (b) 칼만 시간 간격을 프레임 수에 비례하게 조정, (c) 속도는 offset 시계열에서만 산출하고 tracker 속도는 안 씀(현재 구현이 이쪽) | S6 (검출 주기 분리 착수 시) |
 | **곡선 도로 보정 미구현** | METRICS가 차선 중심선을 그대로 기준선으로 쓴다. 정상적인 곡선 주행에서 앞차가 안쪽으로 파고드는 궤적이 표류·걸침으로 보일 수 있다. 오탐 케이스 목록(risk-criteria.md 6.3)에 이미 올라 있는 시나리오 | S4 (RISK 구현 시) |
 | ~~판별 단서 범위·출력 표현~~ | **해결 (v0.8)** — 채택 단서(사행·걸침·스웨빙·표류, 속도 불규칙은 후보로 별도 검토 중)와 출력 형태(0~100 점수+단서목록) 2026-09-26 지도교수 확인으로 확정. 이벤트 스키마 `risk.types` 반영은 서버 파트(주민규) 협의 필요 — `event-schema.md` 5장 | — |
-| **GPS/위치 데이터 입력 경로** | ~~구조도에 GPS 입력 모듈이 없음~~ → **부분 해결**: HW 아키텍처상 GPS/IMU가 결합된 입력으로 P3(RISK)에 들어오는 것으로 확인 (`system-architecture.md` 참고). ESP32 경유 여부 등 구체 프로토콜, 타임스탬프 동기화 방식은 여전히 미정 | HW팀(강섬희) 확인 후 |
+| **GPS/위치 데이터 입력 경로** | ~~구조도에 GPS 입력 모듈이 없음~~ → **부분 해결**: HW 아키텍처상 GPS/IMU가 결합된 입력으로 P3(RISK)에 들어오는 것으로 확인 (`system-architecture.md` 참고). **인터페이스는 구현 완료 (2026-10-01)** — `src/input/sensors.py`(`SensorSource` Protocol). `main.py`가 더 이상 `ego_speed_kmh=None`을 하드코딩하지 않고 이 경로로 읽는다. PC는 `DummySensorSource`(고정값)로 `lane_departure` 경로 자체를 테스트 가능. Pi5(`pi5.yaml`)는 ESP32 UART 프로토콜 미확정이라 안전 기본값인 `UnavailableSensorSource`(항상 미수신)를 그대로 쓴다 — 동작은 이전과 동일(`lane_departure` 항상 판단 보류)하되 구조만 갖춰 둔 상태. **ESP32 경유 여부 등 구체 프로토콜은 여전히 미정** — 확정되면 `SerialGPSIMUSource`(현재 `NotImplementedError` 스텁)만 채우면 된다 | HW팀(강섬희) 확인 후 |
 | **EVENT 비동기 처리의 동시성 모델** | "비동기 처리로 파이프라인 비차단"이라는 요구사항만 있고 스레드 vs 멀티프로세스, 프레임 링 버퍼의 스레드 안전성 설계가 없음. Python GIL 특성상 CPU-bound 블러·인코딩은 스레드로는 실효 이득이 제한적일 수 있음 | S1~S2 구현 착수 시 |
 | ~~얼굴 블러 검출 방식~~ | **해결 (v0.12)** — Haar cascade(non-DL) 채택, `src/privacy/face_blur.py`(`FaceBlurrer`). 데이터셋 없이 완성 가능해 S4를 기다리지 않고 구현. 번호판 블러(YOLO 클래스 확장)는 여전히 데이터셋 의존적이라 미해결로 남음 | — |
 | **로컬 저장공간 관리 정책** | Store-and-Forward는 통신 단절만 가정. SD카드 용량 초과 시 정책(오래된 큐 삭제/신규 이벤트 드롭/사용자 알림) 부재. 4시간 이상 연속 구동 KPI 고려 시 실제로 발생 가능한 시나리오 | S7 안정화 이전 |
@@ -491,6 +491,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| 0.14 | 2026-10-01 | **GPS/IMU 입력 경로 인터페이스 구현** — `src/input/sensors.py`(`SensorSource` Protocol, `DummySensorSource`, `UnavailableSensorSource`, `SerialGPSIMUSource` 스텁). `main.py`가 `ego_speed_kmh=None` 하드코딩을 걷어내고 이 경로로 읽도록 변경 — `lane_departure`의 속도 게이팅(1.3)을 PC(`dev.yaml`, dummy 80km/h)에서 처음으로 끝까지 테스트할 수 있게 됨. `pi5.yaml`은 ESP32 프로토콜 미확정이라 안전 기본값(`unavailable`, 항상 미수신)을 그대로 써 동작은 이전과 동일하게 유지. 5장 "GPS/위치 데이터 입력 경로" 미결 사항 갱신 |
 | 0.13 | 2026-10-01 | **NCNN export 구현** — `scripts/export_model.py --format ncnn`(`export_ncnn`, `verify_ncnn`). 예상과 달리 `onnx2ncnn`이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환(ONNX export와 독립된 경로). `ncnn`·`pnnx==20260526`(세그폴트 회피 핀) 의존성 추가. 640/320 두 해상도, `--fp16` 옵션, `src/main.py` 전체 파이프라인 통합까지 개발 PC에서 에러 없이 확인. 5장 "추론 엔진" 미결 사항에 1회성 비교 수치(참고용, Pi5 수치 아님) 반영 |
 | 0.12 | 2026-10-01 | **데이터셋 비의존 항목 완성** — ①`src/risk/frame_quality.py`(`FrameQualityChecker`, Laplacian 분산 블러·평균 밝기 급변 검사)로 RISK 입력 게이팅의 "프레임 품질" 항목 구현, `RiskScorer.assess()`에 `frame_quality_ok` 인자 추가. ②`src/event/queue.py`(`EventQueue`)로 로컬 SQLite Store-and-Forward 큐 구현 — 메타/클립 전송 상태 분리 추적, `event_id` 중복 적재 방지. ③`src/event/clip.py`(`ClipProvider` Protocol, `NullClipProvider`)로 HW 링 버퍼 요청 인터페이스의 AI 파트 쪽 타입 계약 정의. ④`src/privacy/face_blur.py`(`FaceBlurrer`)로 Haar cascade 기반 얼굴 블러 구현 — "얼굴 블러 검출 방식" 미결 사항 해소. `main.py`에 전부 연결(클립·네트워크 전송 제외). 부수적으로 `requirements.txt`의 `opencv-python` 상한을 `<5.0`으로 고정(5.0부터 `CascadeClassifier`·번들 haarcascade가 빠져 얼굴 블러가 깨짐을 확인) |
 | 0.1 | 2026-09-10 | 초안 작성 |

@@ -15,3 +15,7 @@ detection:
 
 logging:
   level: INFO
+
+# sensors는 default.yaml의 unavailable을 그대로 쓴다 — ESP32 UART 프로토콜이
+# 확정되면 src/input/sensors.py의 SerialGPSIMUSource를 구현하고 여기를
+# `sensors: {source: serial, serial_port: ..., serial_baudrate: ...}`로 override한다.

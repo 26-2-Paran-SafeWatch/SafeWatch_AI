@@ -72,14 +72,20 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Pi5 추가 설정
+### Pi5 설치
+
+개발 PC용 `requirements.txt`에는 모델 변환 도구(onnx, onnxslim, ncnn, pnnx)와
+테스트 도구(pytest)가 포함돼 있어 Pi5에는 그대로 설치하지 않는다. 파인튜닝·
+변환은 개발 PC에서 미리 끝내고, Pi5에는 실행에 필요한 최소 의존성만 둔다.
 
 ```bash
-# picamera2는 시스템 패키지로 설치
+# picamera2는 시스템 패키지로 설치 (pip 대상 아님)
 sudo apt install -y python3-picamera2
 
-# 가상환경에서 시스템 패키지 접근이 필요한 경우
+# 가상환경에서 시스템 패키지(picamera2) 접근이 필요하다
 python -m venv .venv --system-site-packages
+source .venv/bin/activate
+pip install -r requirements-pi5.txt
 ```
 
 ---
@@ -117,6 +123,61 @@ python scripts/evaluate.py --pred results/ --gt data/labels/
 
 Precision, Recall, F1을 산출한다.
 
+### 모델 변환 (개발 PC 전용)
+
+```bash
+python scripts/export_model.py --format onnx --imgsz 320   # Pi5 배포용
+python scripts/export_model.py --format ncnn --imgsz 320
+```
+
+PyTorch(.pt) 가중치를 ONNX 또는 NCNN으로 변환한다. 변환 직후 실제로 로드해
+추론까지 돌려보는 검증을 포함한다. 두 포맷 모두 Pi5에서 실측한 뒤
+`configs/pi5.yaml`의 `detection.engine`으로 최종 선택한다(현재 미정,
+`docs/pipeline-architecture.md` 5장 참고). 자세한 배포 순서는 아래
+"Pi5 배포 흐름" 참고.
+
+---
+
+## Pi5 배포 흐름
+
+```
+1. (개발 PC) 파인튜닝 — AI Hub·실차 데이터로 yolov8n.pt 재학습 (S5)
+       │
+2. (개발 PC) 모델 변환 — scripts/export_model.py로 ONNX/NCNN 생성
+       │
+3. 변환된 모델 파일을 Pi5로 복사
+       data/models/*.onnx 또는 data/models/*_ncnn_model/ 디렉터리 전체
+       (data/는 git 추적 대상이 아니므로 scp 등으로 직접 전송)
+       │
+4. (Pi5) 환경 설치 — 위 "Pi5 설치" 참고 (requirements-pi5.txt + picamera2)
+       │
+5. (Pi5) configs/pi5.yaml의 detection.weights가 3번 경로를 가리키는지 확인
+       │
+6. (Pi5) 벤치마크로 목표(10fps 이상) 달성 여부 확인
+       python -m scripts.benchmark --config configs/pi5.yaml --source camera --duration-sec 60
+       │
+7. (Pi5) 실행
+       python -m src.main --config configs/pi5.yaml --source camera
+```
+
+**아직 파인튜닝 전이어도 1~2단계는 사전학습 가중치(`data/models/yolov8n.pt`)로
+먼저 해볼 수 있다** — 검출 정확도는 낮지만 파이프라인 전체(입력→검출→추적→
+차선→판정→이벤트)가 Pi5에서 끊김 없이 도는지, fps 목표를 만족하는지는 미리
+확인할 수 있다.
+
+**GPS/IMU는 아직 Pi5에 실제로 연결되지 않는다** — ESP32 UART 프로토콜이
+HW 파트와 미확정이라 `configs/pi5.yaml`은 `sensors.source: unavailable`
+(안전 기본값, 항상 미수신 처리)로 동작한다. 즉 `lane_departure`(차선 걸침)
+단서는 속도 게이팅을 통과할 방법이 없어 **지금은 절대 발동하지 않는다** —
+사행·스웨빙·표류·속도불규칙 4개 단서는 GPS와 무관하므로 정상 동작한다.
+프로토콜이 확정되면 `src/input/sensors.py`의 `SerialGPSIMUSource`만 구현하면
+된다.
+
+**영상 클립·실제 비식별화 전송도 아직이다** — 링 버퍼(HW 파트)와의 요청
+인터페이스(`src/event/clip.py`)는 정의돼 있지만 실제 구현체가 없어 이벤트
+JSON은 생성·로컬 큐 적재까지만 되고 클립은 항상 비어 있다. `src/privacy/face_blur.py`도
+독립적으로는 완성돼 있지만 호출할 클립 프레임 자체가 아직 없다.
+
 ---
 
 ## 설정
@@ -140,6 +201,9 @@ detection:
   model: yolov8n
   interval: 3              # N프레임마다 검출, 사이는 추적으로 보간
   conf_threshold: 0.5
+
+sensors:
+  source: unavailable      # unavailable(안전 기본값) | dummy(PC 전용) | serial(Pi5, 미구현)
 
 risk:
   observation_window_sec: 10
