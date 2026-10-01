@@ -13,6 +13,10 @@ numpy>=1.26,<3.0
 
 # 추론 엔진 (Pi5 타깃 — 실측 후 onnxruntime/ncnn 중 확정)
 onnxruntime>=1.17,<2.0
+# 모델 변환 (개발 PC 전용, scripts/export_model.py) — Pi5는 위 onnxruntime만 있으면
+# 변환된 .onnx 파일을 그대로 실행할 수 있어 아래 둘은 Pi5에 설치하지 않는다.
+onnx>=1.16
+onnxslim>=0.1
 
 # 설정 관리
 pyyaml>=6.0,<7.0
