@@ -1,6 +1,6 @@
 # 파이프라인 구조 설계서
 
-**버전** 0.12 (프레임 품질 게이팅 · 로컬 이벤트 큐 · 클립 요청 인터페이스 · 얼굴 블러 구현)
+**버전** 0.13 (ONNX·NCNN export 구현)
 **작성** 설만수
 **최종 수정** 2026-10-01
 
@@ -468,7 +468,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 
 | 항목 | 내용 | 결정 시점 |
 |---|---|---|
-| 추론 엔진 | ONNX vs NCNN, 양자화 적용 여부. **ONNX export 경로는 구현·개발 PC 검증 완료 (2026-10-01, `scripts/export_model.py`)** — 둘 중 하나를 택하는 결정 자체는 여전히 미정, NCNN은 export 자체가 아직 미구현 | S6 (11~12주차) Pi5 실측 후 |
+| 추론 엔진 | ONNX vs NCNN, 양자화 적용 여부. **ONNX·NCNN export 경로 둘 다 구현·개발 PC 검증 완료 (2026-10-01, `scripts/export_model.py`)** — 둘 중 하나를 택하는 결정 자체는 여전히 Pi5 실측 전까지 미정. 참고로 개발 PC(Apple Silicon)에서 동일 영상·320 해상도로 한 번씩 돌려본 결과는 PyTorch 85ms → ONNX 77ms → NCNN 47ms(모두 detection 단계 평균)였으나, 워밍업·반복측정 없는 1회성 수치라 **Pi5 성능을 전혀 대변하지 않는다**(CPU 아키텍처·코어·캐시가 다름) — S6에서 `scripts/benchmark.py` 완성 후 제대로 재측정 | S6 (11~12주차) Pi5 실측 후 |
 | 비식별화 위치 | Edge vs 서버 | Pi5 성능 여유 확인 후 |
 | 차선 인식 방식 | OpenCV 유지 vs 딥러닝 전환. **v0.5에서 우선순위 상승** — 차선 인식이 판정 전체의 단일 의존 경로가 되었고 IMU 폴백이 없어짐. S2에서 보도블록 오탐 확인 | S3 (5~6주차) 종료 시점 |
 | 링 버퍼 저장 방식 | ~~무압축 vs 실시간 압축~~ → **해결 (v0.5)**: 5초 세그먼트×12개 순환(총 60초), 구현·크기 결정 모두 HW 파트 담당으로 확정. 압축 여부도 HW 파트 결정 사항 | — |
@@ -491,6 +491,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| 0.13 | 2026-10-01 | **NCNN export 구현** — `scripts/export_model.py --format ncnn`(`export_ncnn`, `verify_ncnn`). 예상과 달리 `onnx2ncnn`이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환(ONNX export와 독립된 경로). `ncnn`·`pnnx==20260526`(세그폴트 회피 핀) 의존성 추가. 640/320 두 해상도, `--fp16` 옵션, `src/main.py` 전체 파이프라인 통합까지 개발 PC에서 에러 없이 확인. 5장 "추론 엔진" 미결 사항에 1회성 비교 수치(참고용, Pi5 수치 아님) 반영 |
 | 0.12 | 2026-10-01 | **데이터셋 비의존 항목 완성** — ①`src/risk/frame_quality.py`(`FrameQualityChecker`, Laplacian 분산 블러·평균 밝기 급변 검사)로 RISK 입력 게이팅의 "프레임 품질" 항목 구현, `RiskScorer.assess()`에 `frame_quality_ok` 인자 추가. ②`src/event/queue.py`(`EventQueue`)로 로컬 SQLite Store-and-Forward 큐 구현 — 메타/클립 전송 상태 분리 추적, `event_id` 중복 적재 방지. ③`src/event/clip.py`(`ClipProvider` Protocol, `NullClipProvider`)로 HW 링 버퍼 요청 인터페이스의 AI 파트 쪽 타입 계약 정의. ④`src/privacy/face_blur.py`(`FaceBlurrer`)로 Haar cascade 기반 얼굴 블러 구현 — "얼굴 블러 검출 방식" 미결 사항 해소. `main.py`에 전부 연결(클립·네트워크 전송 제외). 부수적으로 `requirements.txt`의 `opencv-python` 상한을 `<5.0`으로 고정(5.0부터 `CascadeClassifier`·번들 haarcascade가 빠져 얼굴 블러가 깨짐을 확인) |
 | 0.1 | 2026-09-10 | 초안 작성 |
 | 0.2 | 2026-09-10 | 미결 사항 6건 추가 (IMU-track_id 귀속 규칙, GPS 입력 경로, EVENT 동시성 모델, 얼굴 블러 방식, 저장공간 관리, 캘리브레이션 절차) — 전반적 아키텍처 재검토 결과 |
