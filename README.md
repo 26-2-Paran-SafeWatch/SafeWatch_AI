@@ -275,6 +275,8 @@ safewatch-ai/
 | [`docs/event-schema.md`](docs/event-schema.md) | 이벤트 JSON 스키마 (앱·서버 인터페이스) |
 | [`docs/risk-criteria.md`](docs/risk-criteria.md) | 음주운전 의심 거동 판단 기준과 근거 |
 | [`docs/sprint-plan.md`](docs/sprint-plan.md) | 8스프린트 진행 계획 (S1~S8), 팀 협업 항목, KPI 체크리스트 |
+| [`docs/hw-handoff-guide.md`](docs/hw-handoff-guide.md) | HW 파트(강섬희) 인수인계 — Pi5 실행법, HW가 맞춰줘야 할 인터페이스, 다운로드할 데이터셋 |
+| [`docs/gpu-desktop-setup.md`](docs/gpu-desktop-setup.md) | 파인튜닝용 GPU 데스크탑(WSL) 환경 설정, AI Hub 다운로드 절차 |
 
 ---
 
