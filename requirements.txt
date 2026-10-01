@@ -5,7 +5,10 @@ ultralytics>=8.2,<9.0
 lap>=0.5.12
 
 # 차선 인식·영상 처리
-opencv-python>=4.9
+# <5.0으로 상한을 둔다 — 5.0부터 cv2.CascadeClassifier와 cv2/data의 번들
+# haarcascade XML이 빠져 PRIVACY 모듈의 얼굴 블러(src/privacy/face_blur.py,
+# Haar cascade 기반)가 깨진다 (2026-10-01 확인).
+opencv-python>=4.9,<5.0
 numpy>=1.26,<3.0
 
 # 추론 엔진 (Pi5 타깃 — 실측 후 onnxruntime/ncnn 중 확정)

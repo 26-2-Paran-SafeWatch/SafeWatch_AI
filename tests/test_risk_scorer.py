@@ -147,6 +147,41 @@ def test_lane_based_indicators_skipped_when_lane_invalid_this_frame(scorer: Risk
     assert "speed_irregular" in result.types
 
 
+def test_frame_quality_failure_suppresses_all_indicators(scorer: RiskScorer, cfg):
+    """프레임 품질 미달(블러·밝기 급변) — 다른 조건을 다 충족해도 전부 판단 보류.
+
+    risk-criteria.md 4.1 "프레임 품질" 게이팅. FrameQualityChecker 자체의
+    블러·밝기 판정은 tests/test_frame_quality.py가 다루고, 여기서는
+    "frame_quality_ok=False가 RiskScorer에 실제로 반영되는가"만 본다.
+    """
+    threshold = cfg.risk.lane_departure.offset_ratio_threshold
+    n = int(cfg.risk.lane_departure.min_duration_sec * 15) + 10
+    samples = _flat_samples(n, offset_ratio=threshold + 0.1, bbox_height=60.0)
+    dt = 1 / 15
+    for i in range(20):
+        samples.append(
+            OffsetSample(
+                timestamp=samples[-1].timestamp + dt,
+                offset_m=(threshold + 0.1) * 3.5,
+                offset_ratio=threshold + 0.1,
+                lateral_velocity_mps=0.0,
+                lane_confidence=0.9,
+                is_interpolated=False,
+                bbox_height=samples[-1].bbox_height * 1.03,
+            )
+        )
+    track = _track()
+    series = _series(1, samples)
+    t = samples[-1].timestamp
+
+    result = scorer.assess(
+        track, series, lane_valid=True, timestamp=t, ego_speed_kmh=80, frame_quality_ok=False
+    )
+    assert result.types == []
+    assert result.score == 0
+    assert result.should_emit_event is False
+
+
 def test_event_fires_once_then_cooldown_suppresses_repeat(scorer: RiskScorer, cfg):
     """3개 지표를 동시 충족(가중치 0.2×3=score 60=start_score)시켜 이벤트 발생을 확인.
 

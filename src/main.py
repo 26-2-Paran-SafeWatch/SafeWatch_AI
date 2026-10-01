@@ -1,11 +1,13 @@
 """SafeWatch AI 파이프라인 진입점.
 
 현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS · RISK ·
-EVENT(메타데이터만). 이벤트 발생 시 JSON 메타데이터는 만들어 로그로
-남기지만, **영상 클립 추출·전송은 아직 없다** — 링 버퍼 요청 인터페이스가
-HW 파트와 협의 중이라 미구현이다 (docs/system-architecture.md "아직
-남은 것"). 각 스프린트 진행에 따라 파이프라인을 채운다
-(docs/pipeline-architecture.md 참고).
+EVENT(메타데이터 + 로컬 큐 적재). 이벤트 발생 시 JSON 메타데이터를 만들어
+로컬 SQLite 큐(`src/event/queue.py`)에 저장하고 로그로도 남긴다. **영상
+클립 추출은 아직 없다** — 링 버퍼 요청 인터페이스가 HW 파트와 협의 중이라
+`NullClipProvider`(`src/event/clip.py`)가 항상 클립 없음을 반환한다
+(docs/system-architecture.md "아직 남은 것"). 실제 인터페이스가 확정되면
+이 자리에서 `ClipProvider` 구현체만 교체하면 된다. 각 스프린트 진행에
+따라 파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
 
 **GPS 속도 미연결** — RISK의 `lane_departure`는 자차 속도 게이팅(LDWS
 60km/h 근거, risk-criteria.md 1.3)이 필요한데 GPS 입력 자체가 아직
@@ -23,12 +25,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from pathlib import Path
 
 from src.detection.detector import VehicleDetector
 from src.event.builder import EventIdGenerator, build_event_metadata
+from src.event.clip import NullClipProvider
+from src.event.queue import EventQueue
 from src.input.source import create_source
 from src.lane.lane_detector import LaneDetector
 from src.metrics.offset import OffsetCalculator
+from src.risk.frame_quality import FrameQualityChecker
 from src.risk.scorer import RiskScorer
 from src.tracking.tracker import VehicleTracker
 from src.utils.config import load_config
@@ -64,7 +70,10 @@ def run(config_path: str, source: str) -> None:
     # LANE이 쓰는 perspective 변환기를 공유한다.
     offset_calculator = OffsetCalculator(cfg, lane_detector.perspective)
     risk_scorer = RiskScorer(cfg)
+    frame_quality_checker = FrameQualityChecker(cfg)
     event_id_generator = EventIdGenerator(cfg.event.device_id)
+    clip_provider = NullClipProvider()  # HW 링 버퍼 인터페이스 확정 전까지 항상 클립 없음
+    event_queue = EventQueue(Path(cfg.event.queue_dir) / "events.db")
 
     try:
         for frame in frame_source.frames():
@@ -79,6 +88,8 @@ def run(config_path: str, source: str) -> None:
                 tracks = tracker.update(boxes)
             else:
                 tracks = tracker.interpolate()
+
+            frame_quality_ok = frame_quality_checker.check(frame.image)
 
             # LANE을 먼저 돌려야 perspective 행렬이 만들어져 METRICS가 좌표를
             # 변환할 수 있다.
@@ -98,9 +109,13 @@ def run(config_path: str, source: str) -> None:
                     continue
                 # GPS 미연결 상태 — 위 모듈 docstring 참고. lane_departure는 항상 판단 보류된다.
                 assessment = risk_scorer.assess(
-                    track, ts, lane_valid=lane.valid, timestamp=frame.timestamp, ego_speed_kmh=None
+                    track, ts, lane_valid=lane.valid, timestamp=frame.timestamp,
+                    ego_speed_kmh=None, frame_quality_ok=frame_quality_ok,
                 )
                 if assessment.should_emit_event:
+                    clip_result = clip_provider.request_clip(
+                        frame.timestamp, cfg.event.clip_pre_sec, cfg.event.clip_post_sec
+                    )
                     event = build_event_metadata(
                         event_id=event_id_generator.next(frame.timestamp),
                         device_id=cfg.event.device_id,
@@ -111,13 +126,17 @@ def run(config_path: str, source: str) -> None:
                         cfg=cfg,
                         model_version=cfg.event.model_version,
                         rule_version=cfg.event.rule_version,
-                        # location·clip은 GPS·링 버퍼 미연결로 아직 없음 (build_event_metadata docstring)
+                        # location은 GPS 미연결로 아직 없음 (build_event_metadata docstring)
+                        clip=clip_result.to_schema_dict() if clip_result else None,
+                    )
+                    event_queue.enqueue(
+                        event, clip_path=clip_result.local_path if clip_result else None
                     )
                     logger.info(
                         "frame_id=%d 음주운전 의심 거동 감지 — %s",
                         frame.frame_id, json.dumps(event, ensure_ascii=False),
                     )
-                    # TODO(S4): 클립 요청(링 버퍼)·전송 큐 적재 — HW 인터페이스 확정 후
+                    # TODO(S4): 실제 전송(HTTP 업로드) — event_queue.pending()에서 꺼내 전송 후 mark_sent()
                 elif frame.frame_id % 30 == 0:
                     logger.debug(
                         "frame_id=%d track=%d offset=%.2fm(%.1f%%) v_lat=%.2fm/s score=%d",
@@ -129,6 +148,7 @@ def run(config_path: str, source: str) -> None:
         logger.info("중단 요청 수신, 종료합니다.")
     finally:
         frame_source.close()
+        event_queue.close()
         summary = profiler.summary()
         if summary:
             logger.info("단계별 평균 처리 시간(ms): %s", summary)
