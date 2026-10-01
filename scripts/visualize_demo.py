@@ -4,12 +4,14 @@
 않고 로그만 남기지만, 이 스크립트는 결과를 눈으로 확인할 수 있게
 bounding box와 차선 곡선을 원본 프레임에 그려 저장한다.
 
-사용법
-    python scripts/visualize_demo.py --config configs/dev.yaml \
+사용법 — `src.*`를 import하므로 반드시 `-m`으로 실행한다(2026-10-01 확인:
+직접 `python scripts/visualize_demo.py`로 실행하면 `ModuleNotFoundError: No
+module named 'src'`가 난다 — `src/main.py`·`scripts/benchmark.py`와 같은 이유).
+    python -m scripts.visualize_demo --config configs/dev.yaml \
         --source data/raw/sample.mp4 --output data/processed/demo.mp4
 
     # 이미지 한 장만 확인할 때
-    python scripts/visualize_demo.py --config configs/dev.yaml \
+    python -m scripts.visualize_demo --config configs/dev.yaml \
         --source data/raw/sample.jpg --output data/processed/demo.jpg
 """
 

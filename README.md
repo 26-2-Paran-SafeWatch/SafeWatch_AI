@@ -101,10 +101,13 @@ python -m src.main --config configs/pi5.yaml --source camera
 ### 성능 벤치마크
 
 ```bash
-python scripts/benchmark.py --config configs/pi5.yaml
+python -m scripts.benchmark --config configs/pi5.yaml --source camera
 ```
 
-단계별 처리 시간, fps, CPU 온도를 측정하여 `results/benchmark/`에 기록한다.
+단계별 처리 시간, fps, CPU 온도를 측정하여 `results/benchmark/`에 기록한다. `src.main`처럼
+`scripts/` 안에서 `src.*`를 import하는 스크립트(`benchmark.py`, `visualize_demo.py`)는
+`python scripts/이름.py`로 직접 실행하면 `ModuleNotFoundError: No module named 'src'`가
+나므로 반드시 `-m scripts.이름`로 실행한다.
 
 ### 성능 평가
 

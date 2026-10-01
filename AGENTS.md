@@ -169,8 +169,8 @@ python -m src.main --config configs/dev.yaml --source data/raw/sample.mp4
 # Pi5 실기기 실행
 python -m src.main --config configs/pi5.yaml --source camera
 
-# 성능 벤치마크
-python scripts/benchmark.py --config configs/pi5.yaml
+# 성능 벤치마크 (src.* import 때문에 반드시 -m으로 실행 — src/main.py와 동일한 이유)
+python -m scripts.benchmark --config configs/pi5.yaml --source camera
 
 # 성능 평가 (Precision/Recall/F1)
 python scripts/evaluate.py --pred results/ --gt data/labels/
