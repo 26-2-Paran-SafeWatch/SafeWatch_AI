@@ -354,7 +354,7 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 
 ### 발열 대응
 - [ ] 액티브 쿨러 장착 상태 확인
-- [ ] 장시간 구동 시 온도·fps 로깅
+- [ ] 장시간 구동 시 온도·fps 로깅 — **도구는 준비 완료 (2026-10-01)**, `scripts/benchmark.py`(`python -m scripts.benchmark --config configs/pi5.yaml --source camera --duration-sec <N>`). 단계별 처리 시간·fps는 즉시 집계되고, CPU 온도는 `/sys/class/thermal/thermal_zone0/temp`(Pi5 경로)를 읽어 `results/benchmark/`에 JSON으로 남긴다. **실제 Pi5에서 장시간(30분+) 돌려보는 것 자체는 여전히 남은 작업** — 지금까지는 개발 PC에서 짧은 샘플 영상으로만 동작 확인했다(온도는 당연히 미측정으로 나옴)
 - [ ] **적응형 부하 조절** — 온도 임계 초과 시 검출 주기 증가 또는 해상도 하향
 
 ### 위험 거동 재현 촬영
