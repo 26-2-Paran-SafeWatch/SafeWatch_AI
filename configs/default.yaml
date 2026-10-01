@@ -6,23 +6,78 @@ input:
   fps: 15
   source: null                # CLI --source로 override (파일 경로 / "camera")
 
+sensors:
+  # GPS/IMU 입력 (src/input/sensors.py). risk.lane_departure.min_speed_kmh
+  # 게이팅(LDWS 근거, risk-criteria.md 1.3)에 쓰인다.
+  # 기본값은 unavailable(항상 미수신) — ESP32 프로토콜이 아직 미확정이라
+  # Pi5(pi5.yaml)도 이 값을 그대로 쓴다. dev.yaml만 dummy로 override해
+  # lane_departure 경로를 PC에서 테스트할 수 있게 한다.
+  source: unavailable           # unavailable(안전 기본값) | dummy(PC 전용) | serial(Pi5, 아직 미구현)
+  dummy_gps_speed_kmh: 80.0     # dummy일 때 고정 반환값. lane_departure 게이팅(60km/h)을 넘기는 값으로 둠
+  serial_port: /dev/ttyUSB0     # serial일 때만 사용 — 실제 포트는 HW 파트 확인 필요
+  serial_baudrate: 115200       # [TBD] — ESP32 쪽 보율 확정 필요
+
 detection:
   model: yolov8n
   weights: data/models/yolov8n.pt
   interval: 1                 # N프레임마다 검출 실행, 중간은 tracking이 보간
   conf_threshold: 0.5
+  iou_threshold: 0.45          # NMS IoU 임계값
   engine: pytorch              # pytorch | onnxruntime | ncnn
+  roi_top_ratio: 0.45          # 프레임 상단 이 비율만큼 제외 (하늘 영역)
+  center_region_ratio: 0.7     # 전방 차량 필터링 — 프레임 폭 중앙 이 비율 안의 차량만 채택
 
 lane:
   roi_top_ratio: 0.55          # 프레임 상단부터 ROI 시작 비율
   canny_low: 50
   canny_high: 150
   lane_width_m: 3.5            # 차로 폭 캘리브레이션 기준
-  min_confidence: 0.5          # 이 미만이면 valid=False, IMU 지표만 사용
+  min_confidence: 0.5          # 이 미만이면 valid=False → 해당 구간 판정 보류 (IMU 단독 폴백은 스코프 변경으로 폐지)
+  confidence:
+    # 신뢰도 산출 = 피팅 잔차 + 좌우 평행도 + 검출 픽셀 수
+    # (pipeline-architecture.md 3.3, risk-criteria.md 4.1 "차선 인식 신뢰도")
+    #
+    # max_residual_ratio — RMS 피팅 잔차를 차로 폭으로 나눈 비율의 상한.
+    #   초과하면 선이 아니라 면(노면 텍스처)을 피팅한 것으로 보고 신뢰도 0으로 떨어뜨린다.
+    #   근거: 차선 도색 폭을 0.1~0.15m로 가정하면 차로 폭(3.5m) 대비 3~4.3%,
+    #         폭 w인 띠를 직선 피팅했을 때 RMS 잔차는 약 0.29w이므로 이론값은 차로 폭의 0.9~1.3%.
+    #         합성 직선 실측도 1.5%. 곡선·점선·노면 잡음 여유를 고려해 이론값의 약 6배인 8%를 상한으로 둔다.
+    #         S2에서 발견된 보도블록 오탐은 12.7%로 이 상한을 넘는다.
+    #   ⚠️ 차선 도색 폭 수치는 가정이며 실차 영상으로 재튜닝 대상 (sprint-plan S3 "신뢰도 지표 임계값 튜닝")
+    max_residual_ratio: 0.08
+    # 가중치 — 합이 1.0이어야 한다. 잔차를 가장 크게 보는 이유는 S2 오탐에서
+    # 평행도·픽셀 수는 오탐을 걸러내지 못했고 잔차만 10배 가까운 차이를 보였기 때문이다.
+    # 초안 값이며 실차 영상 확보 후 조정한다.
+    weights:
+      residual: 0.4
+      parallel: 0.35
+      pixel: 0.25
+  perspective:
+    # bird's eye view 변환용 사다리꼴 ROI 네 꼭짓점 (프레임 비율 좌표, [x, y])
+    # 좌상단 → 우상단 → 우하단 → 좌하단 순서.
+    # ⚠️ placeholder 값 — 카메라 장착 위치·화각 확정 후 재캘리브레이션 필요
+    #    (pipeline-architecture.md 5장 "카메라 캘리브레이션 절차" 미결 사항)
+    src_points_ratio: [[0.43, 0.62], [0.57, 0.62], [0.90, 0.95], [0.10, 0.95]]
+    warp_size: [640, 720]      # bird's eye view 출력 해상도 [width, height]
+  color_threshold:
+    s_channel_thresh: [170, 255]   # HLS S채널 — 채도 높은 차선(황색 등) 검출
+    l_channel_thresh: [200, 255]   # HLS L채널 — 밝은 흰색 차선 검출
+  sliding_window:
+    n_windows: 9                # 세로 분할 윈도우 개수
+    margin: 80                  # 윈도우 좌우 폭(px)
+    min_pixels: 50               # 윈도우 재중심 갱신에 필요한 최소 픽셀 수
 
 tracking:
   min_tracked_frames: 30       # 관측 충분성 조건 (pipeline-architecture.md 3.4)
-  match_thresh: 0.8
+  # 아래는 ultralytics 내장 BYTETracker에 그대로 전달하는 값이다.
+  # ultralytics 기본값(cfg/trackers/bytetrack.yaml)을 출발점으로 두고,
+  # ID switching 빈도를 BDD100K MOT 서브셋으로 측정하며 조정한다 (sprint-plan.md S3).
+  track_high_thresh: 0.25      # 1차 매칭에 쓸 검출 신뢰도 하한
+  track_low_thresh: 0.1        # 2차 매칭(가려짐 복구)용 하한
+  new_track_thresh: 0.25       # 새 track 생성 기준 — 높일수록 허위 track 감소
+  track_buffer: 30             # lost track 유지 프레임 수. 앞차에 가려지는 구간을 버틴다
+  match_thresh: 0.8            # IoU 기반 연관 임계값
+  fuse_score: true             # 검출 점수를 매칭 비용에 반영
 
 metrics:
   observation_window_sec: 10.0
@@ -30,22 +85,62 @@ metrics:
   smoothing_window: 5
 
 risk:
+  # 스코프 변경(2026-09-22, 음주운전 의심 차량 감지) 최종 확정 반영 (2026-09-26).
+  # 채택 단서 5종: 차선 걸침·사행·스웨빙·표류(모두 lane offset 기반, risk-criteria.md 1.4)
+  # + 속도 불규칙(bbox 팽창률 기반, lane offset과 독립적인 신호, 1.4.1).
+  # 이 섹션을 쓰는 판정 로직(src/risk)은 아직 미구현 — S4에서 구현 시 아래 값을 그대로 읽는다.
+  # ⚠️ 대부분 값이 여전히 초안(risk-criteria.md 3.1 [TBD])이며 실차 영상 확보 후 재조정 대상이다.
   min_indicators: 2             # 2개 이상 지표 동시 충족 시 이벤트 생성 (NHTSA 근거)
   observation_window_sec: 10.0
-  lane_departure:
-    offset_ratio_threshold: 0.25
-    min_duration_sec: 1.5
-  weaving:
-    min_direction_changes: 3
-  sudden_decel:
-    accel_threshold_g: -0.4
-  sudden_accel:
-    accel_threshold_g: 0.4
-  abrupt_lane_change:
-    heading_change_threshold_deg: 10.0
+
+  lane_departure:                # NHTSA straddling
+    offset_ratio_threshold: 0.25       # [TBD]
+    min_duration_sec: 1.5              # [TBD]
+    min_speed_kmh: 60                  # LDWS 규정 게이팅 근거 (risk-criteria.md 1.3, 4.1) — 이 미만이면 평가 제외
+
+  weaving:                       # NHTSA weaving
+    min_direction_changes: 3           # [TBD]
+    min_amplitude_ratio: 0.1           # [TBD] — 미세 진동 제외 임계 (metrics.VehicleTimeSeries.direction_changes 인자)
+
+  swerving:                      # NHTSA swerving (신규, risk-criteria.md 2.6)
+    lateral_velocity_threshold_mps: 1.0   # [TBD] — 급증 판정 기준
+    recovery_window_sec: 2.0              # [TBD] — 이 시간 내 원위치 복귀해야 스웨빙으로 인정
+
+  drifting:                      # NHTSA drifting (신규)
+    lateral_velocity_max_mps: 0.3      # [TBD] — 이 이하로 "느린" 이동만 표류로 인정
+    min_duration_sec: 3.0              # [TBD]
+    offset_ratio_threshold: 0.15       # [TBD] — 표류로 도달해야 하는 최소 offset
+
+  speed_irregular:                # bbox 팽창률 기반 (신규 채택, 2026-09-26, risk-criteria.md 1.4.1)
+    expansion_rate_threshold_per_sec: 0.25   # TTC≈4초. 실현가능성 검증에서 e≥0.2가 잡음과 안정적으로 분리됨을 확인
+    window_sec: 1.0                          # 팽창률 추정용 슬라이딩 윈도우 — 실현가능성 검증에 쓴 값(15프레임@15fps)과 동일
+
+  frame_quality:                  # risk-criteria.md 4.1 "프레임 품질" 게이팅 (2026-10-01 구현)
+    # 블러 — Laplacian 분산. 낮을수록 흐림. 해상도·렌즈·조명에 따라 범용 절대값이
+    # 없는 휴리스틱이라, 실무에서 출발점으로 흔히 쓰이는 100을 초안으로 둔다.
+    # ⚠️ 실차 영상 확보 후 재튜닝 대상 (sprint-plan.md S3 "신뢰도 지표 임계값 튜닝"과 동일한 처지).
+    min_blur_variance: 100.0      # [TBD]
+    # 밝기 급변 — 직전 프레임 대비 그레이스케일 평균 밝기(0~255) 변화량 상한.
+    # 터널 진출입 등 급격한 조도 변화 대응. 히스토그램 전체 비교보다 단순화한 근사치.
+    max_brightness_jump: 40.0     # [TBD]
+
+  # 지표별 가중치 — 합이 1.0. 실차 데이터로 오탐률을 측정하며 조정한다(sprint-plan.md S4~S7).
+  # 근거 자료가 아직 없어 5개 동일 가중치로 초기화했다 — 실측 전까지는 이 균등 배분 자체가 초안이다.
+  weights:
+    lane_departure: 0.2       # [TBD]
+    weaving: 0.2              # [TBD]
+    swerving: 0.2             # [TBD]
+    drifting: 0.2             # [TBD]
+    speed_irregular: 0.2      # [TBD]
+
+  # 등급 매핑 — 점수 구간의 삼등분. 근거 없는 초안이며 실측 후 조정 대상 (risk-criteria.md 3.3).
+  level_thresholds:
+    medium: 40    # 이상이면 medium
+    high: 70      # 이상이면 high (미만 medium, 그 아래 low)
+
   hysteresis:
-    start_score: 60
-    end_score: 40
+    start_score: 60               # [TBD]
+    end_score: 40                 # [TBD]
   cooldown_sec: 60              # 동일 차량 중복 이벤트 억제
 
 event:
@@ -54,6 +149,9 @@ event:
   cooldown_sec: 60
   output_dir: data/processed/events
   queue_dir: data/processed/queue
+  device_id: safewatch-dev-001         # 실기기 배포 시 고유 ID로 교체 (event-schema.md 3.1)
+  model_version: yolov8n-safewatch-unfinetuned   # S5 파인튜닝 전까지는 사전학습 가중치 그대로임을 명시
+  rule_version: risk-v0.10-dui-scope             # risk-criteria.md 버전과 맞춰 수동 갱신
 
 privacy:
   blur_plates: true

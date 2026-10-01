@@ -1,12 +1,32 @@
+# 개발 PC(Mac/Linux/Windows)용 전체 의존성 — 파인튜닝·모델 변환·테스트까지 포함한다.
+# Pi5 배포용 최소 의존성은 requirements-pi5.txt 참고 (모델 변환 도구·pytest 제외).
+
 # 객체 검출·추적 — YOLOv8n + ByteTrack(내장)
 ultralytics>=8.2,<9.0
+# ByteTrack의 헝가리안 매칭에 필요. ultralytics가 실행 중에 자동 설치를
+# 시도하지만, Pi5에서 네트워크 없이 구동할 수 있어야 하므로 명시한다.
+lap>=0.5.12
 
 # 차선 인식·영상 처리
+# <5.0으로 상한을 둔다 — 5.0부터 cv2.CascadeClassifier와 cv2/data의 번들
+# haarcascade XML이 빠져 PRIVACY 모듈의 얼굴 블러(src/privacy/face_blur.py,
+# Haar cascade 기반)가 깨진다 (2026-10-01 확인).
 opencv-python>=4.9,<5.0
-numpy>=1.26,<2.0
+numpy>=1.26,<3.0
 
 # 추론 엔진 (Pi5 타깃 — 실측 후 onnxruntime/ncnn 중 확정)
 onnxruntime>=1.17,<2.0
+# 모델 변환 (개발 PC 전용, scripts/export_model.py) — Pi5는 변환된 결과물(.onnx
+# 파일 또는 NCNN param/bin)만 실행하면 되므로 아래 넷은 Pi5에 설치하지 않는다.
+onnx>=1.16
+onnxslim>=0.1
+# NCNN 변환 — onnx2ncnn이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환한다
+# (scripts/export_model.py의 export_ncnn 참고). pnnx는 ultralytics 자체가
+# "20260704부터 NCNN 추론 세그폴트 버그 있음"이라며 20260526에 고정해 두는
+# 버전이라(ultralytics.utils.export.ncnn) 그대로 맞춘다 — ultralytics 업그레이드
+# 시 이 핀도 같이 확인할 것.
+ncnn>=1.0
+pnnx==20260526
 
 # 설정 관리
 pyyaml>=6.0,<7.0

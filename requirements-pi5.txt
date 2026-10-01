@@ -1,0 +1,29 @@
+# Pi5 배포용 최소 의존성 — requirements.txt(개발 PC)에서 모델 변환 전용
+# 도구(onnx, onnxslim, pnnx)와 테스트 도구(pytest)를 뺐다. 파인튜닝·ONNX/NCNN
+# 변환은 전부 개발 PC에서 scripts/export_model.py로 미리 끝내고, 그 결과물
+# (.onnx 파일 또는 NCNN _ncnn_model 디렉터리)만 Pi5로 옮겨 실행한다.
+#
+# 설치
+#   python -m venv .venv --system-site-packages   # picamera2는 시스템 패키지라 필요
+#   source .venv/bin/activate
+#   pip install -r requirements-pi5.txt
+
+# 객체 검출·추적 — YOLOv8n(추론 전용) + ByteTrack(내장)
+ultralytics>=8.2,<9.0
+lap>=0.5.12
+
+# 차선 인식·영상 처리 · PRIVACY 얼굴 블러(Haar cascade)
+# <5.0 상한 이유는 requirements.txt와 동일 — cv2.CascadeClassifier·번들
+# haarcascade XML이 5.0부터 빠짐.
+opencv-python>=4.9,<5.0
+numpy>=1.26,<3.0
+
+# 추론 엔진 — S6 Pi5 실측 후 ONNX/NCNN 중 하나로 확정되면 안 쓰는 줄은 지운다.
+# 지금은 결정 전이라 둘 다 설치해 두고 configs/pi5.yaml의 detection.engine으로 고른다.
+onnxruntime>=1.17,<2.0        # detection.engine: onnxruntime
+ncnn>=1.0                      # detection.engine: ncnn (pnnx는 변환 전용이라 Pi5엔 불필요)
+
+pyyaml>=6.0,<7.0
+
+# --- 시스템 패키지로 별도 설치 (pip 대상 아님) ---
+# python3-picamera2 — apt로 설치 (README.md "Pi5 추가 설정" 참고)

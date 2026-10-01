@@ -4,8 +4,18 @@
 개발할 수 있도록, docs/event-schema.md 스키마를 따르는 샘플 JSON을 생성한다.
 클립 파일은 만들지 않고 메타데이터만 생성한다 (파일명만 스키마에 채움).
 
-주의 — 이 스키마는 협의 중(v0.1)이다. 필드를 임의로 바꾸지 않는다
-(AGENTS.md 원칙 4). 확정 전까지는 참고용으로만 사용한다.
+⚠️ 이 스크립트는 **AI 파트가 확정한 스키마 제안**(event-schema.md 5.1,
+2026-09-26 스코프 변경 반영)을 따른다 — `risk.types`에 swerving·drifting·
+speed_irregular가 추가되고 sudden_decel·sudden_accel·abrupt_lane_change는
+빠졌다. `docs/event-schema.md` 2·3장의 예시는 서버 파트(주민규) 최종 합의
+전까지 스코프 변경 이전 필드를 그대로 보존해두고 있어, 이 스크립트의
+출력과 문서 본문이 당장은 서로 다른 스냅샷을 보여준다 — 이 스크립트가
+"AI 파트가 실제로 만들 형태"이고, 서버 합의가 끝나면 문서를 맞춰 갱신한다.
+
+**지표 생략 규칙도 실제 스키마와 동일하게 흉내낸다** — 이벤트마다 무작위로
+선택된 `types`에 관련된 지표만 채우고 나머지는 생략한다(`observation_window_sec`
+제외). 서버·앱 파트가 "이 지표는 항상 있는 게 아니다"라는 실제 동작을
+개발 단계에서부터 반영할 수 있게 하기 위함이다.
 
 사용법
     python scripts/generate_dummy_event.py --count 10 --output samples/
@@ -21,13 +31,26 @@ from pathlib import Path
 
 KST = timezone(timedelta(hours=9))
 
-RISK_TYPES = [
-    "lane_departure",
-    "weaving",
-    "sudden_decel",
-    "sudden_accel",
-    "abrupt_lane_change",
-]
+# risk.types 허용값 (event-schema.md 5.1). 타입별로 채울 indicators 필드를 함께 정의한다.
+TYPE_INDICATORS: dict[str, dict[str, tuple[float, float]]] = {
+    "lane_departure": {
+        "lane_offset_max_ratio": (0.2, 0.45),
+        "lane_departure_duration_sec": (1.0, 4.0),
+    },
+    "weaving": {
+        "direction_changes_count": (2, 6),  # int로 반올림해서 씀
+    },
+    "swerving": {
+        "lateral_velocity_peak_mps": (0.8, 2.0),
+    },
+    "drifting": {
+        "drift_duration_sec": (2.5, 6.0),
+    },
+    "speed_irregular": {
+        "expansion_rate_peak_per_sec": (0.2, 0.6),
+    },
+}
+RISK_TYPES = list(TYPE_INDICATORS)
 
 
 def _level_for(score: int) -> str:
@@ -44,6 +67,12 @@ def make_event(index: int, device_id: str) -> dict:
     score = random.randint(40, 95)
     types = random.sample(RISK_TYPES, k=random.choice([2, 2, 3]))
 
+    indicators: dict[str, float] = {"observation_window_sec": 10.0}
+    for t in types:
+        for field, (lo, hi) in TYPE_INDICATORS[t].items():
+            value = random.uniform(lo, hi)
+            indicators[field] = int(value) if field.endswith("_count") else round(value, 2)
+
     return {
         "event_id": event_id,
         "device_id": device_id,
@@ -53,14 +82,7 @@ def make_event(index: int, device_id: str) -> dict:
             "level": _level_for(score),
             "types": types,
         },
-        "indicators": {
-            "lane_offset_max_ratio": round(random.uniform(0.2, 0.45), 2),
-            "lane_departure_duration_sec": round(random.uniform(1.0, 4.0), 1),
-            "direction_changes_count": random.randint(2, 6),
-            "observation_window_sec": 10.0,
-            "longitudinal_accel_peak_g": round(random.uniform(-0.6, -0.2), 2),
-            "heading_change_deg": round(random.uniform(5.0, 20.0), 1),
-        },
+        "indicators": indicators,
         "target_vehicle": {
             "track_id": random.randint(1, 200),
             "tracked_duration_sec": round(random.uniform(8.0, 20.0), 1),
@@ -84,7 +106,7 @@ def make_event(index: int, device_id: str) -> dict:
         },
         "meta": {
             "model_version": "yolov8n-safewatch-dummy",
-            "rule_version": "risk-v0.1-dummy",
+            "rule_version": "risk-v0.10-dui-scope-dummy",
             "confidence_gate_passed": True,
         },
     }

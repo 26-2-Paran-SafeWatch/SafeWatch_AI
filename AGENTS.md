@@ -6,9 +6,9 @@
 
 ## 프로젝트 개요
 
-**SafeWatch AI 모듈** — 차량 전방 카메라 영상에서 위험운전 의심 거동을 실시간 감지하는 엣지 AI 파이프라인.
+**SafeWatch AI 모듈** — 차량 전방 카메라 영상에서 **음주운전 의심 차량**의 거동을 실시간 감지하는 엣지 AI 파이프라인. (2026-09-22 스코프 축소 — 이전의 "위험운전 전반"이 아님)
 
-라즈베리파이5에서 온디바이스로 동작하며, 위험 거동이 감지되면 영상 클립과 메타데이터를 이벤트로 생성해 서버로 전송한다. 최종 신고 판단은 사용자가 수행하며, **AI는 판단 보조 도구일 뿐 자동 신고를 실행하지 않는다.**
+라즈베리파이5에서 온디바이스로 동작하며, 의심 거동이 감지되면 영상 클립과 메타데이터를 이벤트로 생성해 서버로 전송한다. 최종 신고 판단은 사용자가 수행하며, **AI는 판단 보조 도구일 뿐 자동 신고를 실행하지 않는다.**
 
 - 소속: 아주대학교 2026-2학기 파란학기제 SafeWatch 팀
 - 이 저장소 담당: AI 파트 (설만수)
@@ -40,7 +40,7 @@ if offset_ratio > cfg.risk.lane_departure.offset_ratio_threshold:
 
 ### 3. 판단 기준은 근거 없이 바꾸지 않는다
 
-위험 판단의 임계값은 한국교통안전공단 위험운전행동 판별 기준과 NHTSA 음주운전 시각적 판별 지표에 근거해 설정되어 있다. `docs/risk-criteria.md`에 근거가 문서화되어 있다.
+판단 기준은 NHTSA 음주운전 시각적 판별 지표(차로 유지 단서)에 근거한다. 한국교통안전공단 기준은 자차 기준이라 참고 자료일 뿐 판단 근거가 아니다. IMU는 판정 지표가 아니라 자차 거동 보정에만 쓴다. `docs/risk-criteria.md`에 근거가 문서화되어 있다.
 
 **임계값을 임의로 조정하는 코드 변경을 제안하지 않는다.** 조정이 필요하면 근거와 함께 문서 수정을 먼저 제안한다.
 
@@ -101,9 +101,11 @@ safewatch-ai/
 ├── scripts/                  # 실행 스크립트 (벤치마크, 변환, 평가)
 ├── tests/
 ├── docs/
+│   ├── system-architecture.md
 │   ├── pipeline-architecture.md
 │   ├── event-schema.md
-│   └── risk-criteria.md
+│   ├── risk-criteria.md
+│   └── sprint-plan.md
 └── data/                     # gitignore 대상
     ├── raw/
     ├── processed/
@@ -125,7 +127,7 @@ safewatch-ai/
 프레임 → [lane] → 차선 곡선 + 신뢰도
 차량 박스 → [tracking] → track_id 부여된 차량 목록
 차량 + 차선 → [metrics] → lane offset 시계열
-offset 시계열 + IMU → [risk] → 위험 점수 + 유형
+offset 시계열 (IMU로 자차 보정) → [risk] → 음주 의심 점수 + 관측 단서
 위험 점수 → [event] → 이벤트 JSON + 클립
 ```
 
@@ -167,8 +169,8 @@ python -m src.main --config configs/dev.yaml --source data/raw/sample.mp4
 # Pi5 실기기 실행
 python -m src.main --config configs/pi5.yaml --source camera
 
-# 성능 벤치마크
-python scripts/benchmark.py --config configs/pi5.yaml
+# 성능 벤치마크 (src.* import 때문에 반드시 -m으로 실행 — src/main.py와 동일한 이유)
+python -m scripts.benchmark --config configs/pi5.yaml --source camera
 
 # 성능 평가 (Precision/Recall/F1)
 python scripts/evaluate.py --pred results/ --gt data/labels/
@@ -228,6 +230,8 @@ Pi5 실기기 성능에 관한 판단이 필요한데 실측 데이터가 없으
 | 문서 | 내용 |
 |---|---|
 | `README.md` | 프로젝트 개요, 설치, 실행 방법 |
+| `docs/system-architecture.md` | 전체 시스템(카메라·엣지·클라우드·앱) 컨텍스트, 이 저장소의 담당 범위 |
 | `docs/pipeline-architecture.md` | 파이프라인 구조와 모듈 간 데이터 흐름 |
 | `docs/event-schema.md` | 이벤트 JSON 스키마 명세 (앱·서버 인터페이스) |
-| `docs/risk-criteria.md` | 위험 판단 기준과 근거 |
+| `docs/risk-criteria.md` | 음주운전 의심 거동 판단 기준과 근거 |
+| `docs/sprint-plan.md` | 8스프린트 진행 계획, 팀 협업 항목, KPI 체크리스트 |

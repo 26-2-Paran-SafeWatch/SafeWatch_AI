@@ -1,8 +1,8 @@
 # SafeWatch AI
 
-차량 전방 카메라 영상에서 위험운전 의심 거동을 실시간 감지하는 엣지 AI 파이프라인.
+차량 전방 카메라 영상에서 **음주운전 의심 차량**의 거동을 실시간 감지하는 엣지 AI 파이프라인.
 
-라즈베리파이5에서 온디바이스로 동작하며, 위험 거동이 감지되면 해당 구간의 영상 클립과 메타데이터를 이벤트로 생성한다. 운전자는 안전한 곳에 정차한 뒤 저장된 영상을 확인하고 신고 여부를 직접 판단한다.
+판단 근거는 NHTSA 음주운전 시각적 판별 지표 중 전방 카메라로 측정 가능한 차로 유지 단서(사행·차선 걸침·스웨빙·표류)다. 라즈베리파이5에서 온디바이스로 동작하며, 의심 거동이 감지되면 해당 구간의 영상 클립과 메타데이터를 이벤트로 생성한다. 운전자는 안전한 곳에 정차한 뒤 저장된 영상을 확인하고 신고 여부를 직접 판단한다.
 
 > **AI는 신고를 자동으로 실행하지 않는다.** 위험 거동이 관측된 구간을 후보로 제시하고 증거를 자동으로 확보해 주는 신고 보조 도구이며, 최종 판단은 항상 사람이 수행한다.
 
@@ -30,10 +30,11 @@
     │
     ├─→ lane offset 산출 — 차량 중심과 차선 중심의 거리
     │
-    ├─→ 위험 점수 산출 (rule-based)
+    ├─→ 음주 의심 점수 산출 (rule-based, IMU는 자차 흔들림 보정에만 사용)
     │      · 차선 걸침 지속 시간
     │      · 좌우 방향 전환 횟수 (사행)
-    │      · 급가감속 (IMU)
+    │      · 급격한 횡이동 후 복귀 (스웨빙)
+    │      · 한 방향 느린 횡이동 (표류)
     │      → 2개 이상 지표 동시 충족 시 이벤트 생성
     │
     └─→ 이벤트 출력 — JSON + 영상 클립 (비식별화 처리)
@@ -71,14 +72,20 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Pi5 추가 설정
+### Pi5 설치
+
+개발 PC용 `requirements.txt`에는 모델 변환 도구(onnx, onnxslim, ncnn, pnnx)와
+테스트 도구(pytest)가 포함돼 있어 Pi5에는 그대로 설치하지 않는다. 파인튜닝·
+변환은 개발 PC에서 미리 끝내고, Pi5에는 실행에 필요한 최소 의존성만 둔다.
 
 ```bash
-# picamera2는 시스템 패키지로 설치
+# picamera2는 시스템 패키지로 설치 (pip 대상 아님)
 sudo apt install -y python3-picamera2
 
-# 가상환경에서 시스템 패키지 접근이 필요한 경우
+# 가상환경에서 시스템 패키지(picamera2) 접근이 필요하다
 python -m venv .venv --system-site-packages
+source .venv/bin/activate
+pip install -r requirements-pi5.txt
 ```
 
 ---
@@ -100,10 +107,13 @@ python -m src.main --config configs/pi5.yaml --source camera
 ### 성능 벤치마크
 
 ```bash
-python scripts/benchmark.py --config configs/pi5.yaml
+python -m scripts.benchmark --config configs/pi5.yaml --source camera
 ```
 
-단계별 처리 시간, fps, CPU 온도를 측정하여 `results/benchmark/`에 기록한다.
+단계별 처리 시간, fps, CPU 온도를 측정하여 `results/benchmark/`에 기록한다. `src.main`처럼
+`scripts/` 안에서 `src.*`를 import하는 스크립트(`benchmark.py`, `visualize_demo.py`)는
+`python scripts/이름.py`로 직접 실행하면 `ModuleNotFoundError: No module named 'src'`가
+나므로 반드시 `-m scripts.이름`로 실행한다.
 
 ### 성능 평가
 
@@ -112,6 +122,61 @@ python scripts/evaluate.py --pred results/ --gt data/labels/
 ```
 
 Precision, Recall, F1을 산출한다.
+
+### 모델 변환 (개발 PC 전용)
+
+```bash
+python scripts/export_model.py --format onnx --imgsz 320   # Pi5 배포용
+python scripts/export_model.py --format ncnn --imgsz 320
+```
+
+PyTorch(.pt) 가중치를 ONNX 또는 NCNN으로 변환한다. 변환 직후 실제로 로드해
+추론까지 돌려보는 검증을 포함한다. 두 포맷 모두 Pi5에서 실측한 뒤
+`configs/pi5.yaml`의 `detection.engine`으로 최종 선택한다(현재 미정,
+`docs/pipeline-architecture.md` 5장 참고). 자세한 배포 순서는 아래
+"Pi5 배포 흐름" 참고.
+
+---
+
+## Pi5 배포 흐름
+
+```
+1. (개발 PC) 파인튜닝 — AI Hub·실차 데이터로 yolov8n.pt 재학습 (S5)
+       │
+2. (개발 PC) 모델 변환 — scripts/export_model.py로 ONNX/NCNN 생성
+       │
+3. 변환된 모델 파일을 Pi5로 복사
+       data/models/*.onnx 또는 data/models/*_ncnn_model/ 디렉터리 전체
+       (data/는 git 추적 대상이 아니므로 scp 등으로 직접 전송)
+       │
+4. (Pi5) 환경 설치 — 위 "Pi5 설치" 참고 (requirements-pi5.txt + picamera2)
+       │
+5. (Pi5) configs/pi5.yaml의 detection.weights가 3번 경로를 가리키는지 확인
+       │
+6. (Pi5) 벤치마크로 목표(10fps 이상) 달성 여부 확인
+       python -m scripts.benchmark --config configs/pi5.yaml --source camera --duration-sec 60
+       │
+7. (Pi5) 실행
+       python -m src.main --config configs/pi5.yaml --source camera
+```
+
+**아직 파인튜닝 전이어도 1~2단계는 사전학습 가중치(`data/models/yolov8n.pt`)로
+먼저 해볼 수 있다** — 검출 정확도는 낮지만 파이프라인 전체(입력→검출→추적→
+차선→판정→이벤트)가 Pi5에서 끊김 없이 도는지, fps 목표를 만족하는지는 미리
+확인할 수 있다.
+
+**GPS/IMU는 아직 Pi5에 실제로 연결되지 않는다** — ESP32 UART 프로토콜이
+HW 파트와 미확정이라 `configs/pi5.yaml`은 `sensors.source: unavailable`
+(안전 기본값, 항상 미수신 처리)로 동작한다. 즉 `lane_departure`(차선 걸침)
+단서는 속도 게이팅을 통과할 방법이 없어 **지금은 절대 발동하지 않는다** —
+사행·스웨빙·표류·속도불규칙 4개 단서는 GPS와 무관하므로 정상 동작한다.
+프로토콜이 확정되면 `src/input/sensors.py`의 `SerialGPSIMUSource`만 구현하면
+된다.
+
+**영상 클립·실제 비식별화 전송도 아직이다** — 링 버퍼(HW 파트)와의 요청
+인터페이스(`src/event/clip.py`)는 정의돼 있지만 실제 구현체가 없어 이벤트
+JSON은 생성·로컬 큐 적재까지만 되고 클립은 항상 비어 있다. `src/privacy/face_blur.py`도
+독립적으로는 완성돼 있지만 호출할 클립 프레임 자체가 아직 없다.
 
 ---
 
@@ -136,6 +201,9 @@ detection:
   model: yolov8n
   interval: 3              # N프레임마다 검출, 사이는 추적으로 보간
   conf_threshold: 0.5
+
+sensors:
+  source: unavailable      # unavailable(안전 기본값) | dummy(PC 전용) | serial(Pi5, 미구현)
 
 risk:
   observation_window_sec: 10
@@ -179,8 +247,8 @@ safewatch-ai/
 |---|---|
 | Pi5 파이프라인 처리 속도 | 10 fps 이상 |
 | 감지 후 이벤트 저장 완료까지 지연 | 3초 이내 |
-| 위험운전 감지 정밀도 (Precision) | 90% 이상 |
-| 위험운전 감지 재현율 (Recall) | 80% 이상 |
+| 음주 의심 거동 감지 정밀도 (Precision) | 90% 이상 |
+| 음주 의심 거동 감지 재현율 (Recall) | 80% 이상 |
 | 오탐률 | 10% 이하 |
 | 연속 구동 무중단 시간 | 4시간 이상 |
 
@@ -202,9 +270,13 @@ safewatch-ai/
 | 문서 | 내용 |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | AI 코딩 에이전트용 프로젝트 규칙 |
+| [`docs/system-architecture.md`](docs/system-architecture.md) | 전체 시스템(카메라·엣지·클라우드·앱) 컨텍스트 다이어그램, 이 저장소의 담당 범위 |
 | [`docs/pipeline-architecture.md`](docs/pipeline-architecture.md) | 파이프라인 구조와 모듈 간 데이터 흐름 |
 | [`docs/event-schema.md`](docs/event-schema.md) | 이벤트 JSON 스키마 (앱·서버 인터페이스) |
-| [`docs/risk-criteria.md`](docs/risk-criteria.md) | 위험 판단 기준과 근거 |
+| [`docs/risk-criteria.md`](docs/risk-criteria.md) | 음주운전 의심 거동 판단 기준과 근거 |
+| [`docs/sprint-plan.md`](docs/sprint-plan.md) | 8스프린트 진행 계획 (S1~S8), 팀 협업 항목, KPI 체크리스트 |
+| [`docs/hw-handoff-guide.md`](docs/hw-handoff-guide.md) | HW 파트(강섬희) 인수인계 — Pi5 실행법, HW가 맞춰줘야 할 인터페이스, 다운로드할 데이터셋 |
+| [`docs/gpu-desktop-setup.md`](docs/gpu-desktop-setup.md) | 파인튜닝용 GPU 데스크탑(WSL) 환경 설정, AI Hub 다운로드 절차 |
 
 ---
 
