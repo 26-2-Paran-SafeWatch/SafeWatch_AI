@@ -9,11 +9,14 @@ EVENT(메타데이터 + 로컬 큐 적재). 이벤트 발생 시 JSON 메타데�
 이 자리에서 `ClipProvider` 구현체만 교체하면 된다. 각 스프린트 진행에
 따라 파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
 
-**GPS 속도 미연결** — RISK의 `lane_departure`는 자차 속도 게이팅(LDWS
-60km/h 근거, risk-criteria.md 1.3)이 필요한데 GPS 입력 자체가 아직
-없다(HW 파트 확인 대기, pipeline-architecture.md 미결 사항). 지금은 항상
-`ego_speed_kmh=None`을 넘겨 안전하게 판단 보류시킨다 — 즉 lane_departure는
-GPS가 실제로 연결되기 전까지 절대 충족되지 않는다.
+**GPS 속도** — RISK의 `lane_departure`는 자차 속도 게이팅(LDWS 60km/h
+근거, risk-criteria.md 1.3)이 필요하다. `src/input/sensors.py`로 입력
+경로를 만들었지만, 실제 ESP32 UART 프로토콜은 HW 파트와 아직 협의되지
+않아 `SerialGPSIMUSource`는 미구현이다 — `configs/pi5.yaml`은 당분간
+`sensors.source: unavailable`(default.yaml 기본값)을 그대로 써서 항상
+`ego_speed_kmh=None`을 넘기고, 그 결과 `lane_departure`는 지금도 절대
+충족되지 않는다. `configs/dev.yaml`만 `sensors.source: dummy`로 override해
+PC에서 이 경로 자체는 테스트할 수 있게 해 뒀다.
 
 사용법
     python -m src.main --config configs/dev.yaml --source data/raw/sample.mp4
@@ -31,6 +34,7 @@ from src.detection.detector import VehicleDetector
 from src.event.builder import EventIdGenerator, build_event_metadata
 from src.event.clip import NullClipProvider
 from src.event.queue import EventQueue
+from src.input.sensors import create_sensor_source
 from src.input.source import create_source
 from src.lane.lane_detector import LaneDetector
 from src.metrics.offset import OffsetCalculator
@@ -74,6 +78,7 @@ def run(config_path: str, source: str) -> None:
     event_id_generator = EventIdGenerator(cfg.event.device_id)
     clip_provider = NullClipProvider()  # HW 링 버퍼 인터페이스 확정 전까지 항상 클립 없음
     event_queue = EventQueue(Path(cfg.event.queue_dir) / "events.db")
+    sensor_source = create_sensor_source(cfg)
 
     try:
         for frame in frame_source.frames():
@@ -101,16 +106,16 @@ def run(config_path: str, source: str) -> None:
                 )
 
             series = offset_calculator.update(tracks, lane, frame.timestamp)
+            sensor_reading = sensor_source.read(frame.timestamp)
 
             risk_scorer.sync({t.track_id for t in tracks})
             for track in tracks:
                 ts = series.get(track.track_id)
                 if ts is None:
                     continue
-                # GPS 미연결 상태 — 위 모듈 docstring 참고. lane_departure는 항상 판단 보류된다.
                 assessment = risk_scorer.assess(
                     track, ts, lane_valid=lane.valid, timestamp=frame.timestamp,
-                    ego_speed_kmh=None, frame_quality_ok=frame_quality_ok,
+                    ego_speed_kmh=sensor_reading.gps_speed_kmh, frame_quality_ok=frame_quality_ok,
                 )
                 if assessment.should_emit_event:
                     clip_result = clip_provider.request_clip(
@@ -148,6 +153,7 @@ def run(config_path: str, source: str) -> None:
         logger.info("중단 요청 수신, 종료합니다.")
     finally:
         frame_source.close()
+        sensor_source.close()
         event_queue.close()
         summary = profiler.summary()
         if summary:

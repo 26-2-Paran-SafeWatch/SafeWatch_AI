@@ -11,5 +11,8 @@ detection:
   engine: pytorch
   interval: 1
 
+sensors:
+  source: dummy   # PC에서 lane_departure 속도 게이팅 경로를 테스트할 수 있게 함 (실제 GPS 아님)
+
 logging:
   level: DEBUG
