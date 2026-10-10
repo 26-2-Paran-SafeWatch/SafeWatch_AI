@@ -88,7 +88,8 @@ risk:
   # 스코프 변경(2026-09-22, 음주운전 의심 차량 감지) 최종 확정 반영 (2026-09-26).
   # 채택 단서 5종: 차선 걸침·사행·스웨빙·표류(모두 lane offset 기반, risk-criteria.md 1.4)
   # + 속도 불규칙(bbox 팽창률 기반, lane offset과 독립적인 신호, 1.4.1).
-  # 이 섹션을 쓰는 판정 로직(src/risk)은 아직 미구현 — S4에서 구현 시 아래 값을 그대로 읽는다.
+  # 이 섹션을 읽는 쪽 — `src/risk/scorer.py`(단서 5종 판정·가중합산·등급·히스테리시스·쿨다운)와
+  # `src/risk/frame_quality.py`(frame_quality 하위 키). 코드에 임계값을 직접 쓰지 않는다.
   # ⚠️ 대부분 값이 여전히 초안(risk-criteria.md 3.1 [TBD])이며 실차 영상 확보 후 재조정 대상이다.
   min_indicators: 2             # 2개 이상 지표 동시 충족 시 이벤트 생성 (NHTSA 근거)
   observation_window_sec: 10.0
