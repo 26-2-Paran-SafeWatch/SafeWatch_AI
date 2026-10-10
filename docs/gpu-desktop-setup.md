@@ -2,6 +2,8 @@
 
 팀원 데스크탑(RTX 4070, 2TB, Windows)에서 AI Hub 데이터 다운로드와 YOLO 파인튜닝을 진행하기 위한 설정 절차. 2026-09-28 결정 (`docs/sprint-plan.md` "다운로드·파인튜닝 환경 확정" 참고).
 
+> **무엇을 받아야 하는지**(우선순위·용량 배분·계정 승인 문제)는 [`docs/desktop-data-request.md`](desktop-data-request.md)에 따로 정리돼 있다. 이 문서는 환경 설치 절차 쪽이다.
+
 ## 왜 WSL인가
 
 `aihubshell`은 bash 스크립트라 Windows에서 직접 실행이 안 된다. AI Hub 공식 안내에도 "윈도우에서 파일 다운로드 시 WSL 설치가 필요"라고 명시돼 있다. PyTorch CUDA 학습도 WSL2 안에서 문제없이 GPU를 그대로 쓸 수 있다(Windows의 NVIDIA 드라이버를 WSL2가 그대로 통과시킴, WSL 안에 별도 드라이버 설치 불필요).
