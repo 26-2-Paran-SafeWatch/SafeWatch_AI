@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", default="safewatch", help="결과가 쌓일 실행 이름")
     parser.add_argument(
         "--project", default="results/train",
-        help="결과 루트. 코랩에서는 세션이 끊겨도 살아남도록 Drive 경로를 지정할 것",
+        help="결과가 쌓일 루트 디렉터리",
     )
     parser.add_argument("--patience", type=int, default=50, help="이 epoch 동안 개선 없으면 조기 종료")
     parser.add_argument("--resume", action="store_true", help="같은 --name의 마지막 체크포인트에서 이어서")
@@ -65,8 +65,11 @@ def parse_args() -> argparse.Namespace:
         "정확도를 끌어올리는 쪽으로 기본값을 잡아뒀다. 특별한 이유가 없으면 건드리지 않아도 된다.",
     )
     perf.add_argument(
-        "--cache", default="ram", choices=["ram", "disk", "none"],
-        help="이미지 캐싱. ram이 가장 빠르지만 데이터셋이 RAM보다 크면 disk나 none으로 (기본 ram)",
+        "--cache", default="none", choices=["ram", "disk", "none"],
+        help=(
+            "이미지 캐싱. 학습 속도에만 영향을 주고 정확도와는 무관하다. "
+            "RAM 여유가 데이터셋보다 크면 ram이 가장 빠르다 (기본 none — 안전한 쪽)"
+        ),
     )
     perf.add_argument(
         "--close-mosaic", type=int, default=15,
@@ -167,7 +170,7 @@ def main() -> None:
         degrees=args.degrees,
         fliplr=args.fliplr,
         plots=True,          # 학습 곡선·PR 커브 이미지 저장 — 결과 보고에 그대로 쓴다
-        save_period=10,      # 10 epoch마다 체크포인트. 코랩 세션이 끊겨도 되돌아갈 지점이 남는다
+        save_period=10,      # 10 epoch마다 체크포인트. 중간에 멈춰도 되돌아갈 지점이 남는다
     )
 
     best = Path(results.save_dir) / "weights" / "best.pt"
