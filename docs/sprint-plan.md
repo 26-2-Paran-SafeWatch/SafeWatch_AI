@@ -307,7 +307,7 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 - [ ] CVAT로 어노테이션 수행
 
 ### 파인튜닝
-- [x] **파인튜닝 실행 경로 구현 (2026-10-10)** — `scripts/prepare_yolo_dataset.py`(이미지·라벨 짝 맞춰 YOLO 레이아웃+data.yaml 생성)와 `scripts/train.py`(정확도 위주 기본값, 체크포인트·resume) 신설. 합성 데이터로 end-to-end 동작 확인함. 학습 환경은 **코랩으로 확정**(2026-10-10) — 인계 문서 `docs/finetuning-handoff.md`
+- [x] **파인튜닝 실행 경로 구현 (2026-10-10)** — `scripts/prepare_yolo_dataset.py`(이미지·라벨 짝 맞춰 YOLO 레이아웃+data.yaml 생성)와 `scripts/train.py`(정확도 위주 기본값, 체크포인트·resume) 신설. 합성 데이터로 end-to-end 동작 확인함. 실행은 강섬희 담당으로 인계(2026-10-10) — 받을 데이터 목록과 명령은 `docs/finetuning-handoff.md`
 - [ ] 공개 데이터셋 기반 사전학습 모델 준비
 - [ ] 국내 실차 데이터로 파인튜닝 (GPU 클라우드 활용)
 - [ ] 클래스 불균형 대응 — 가중치 조정 / 오버샘플링 / 데이터 증강

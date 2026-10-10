@@ -2,10 +2,8 @@
 
 팀원 데스크탑(RTX 4070, 2TB, Windows)에서 AI Hub 데이터 다운로드와 YOLO 파인튜닝을 진행하기 위한 설정 절차. 2026-09-28 결정 (`docs/sprint-plan.md` "다운로드·파인튜닝 환경 확정" 참고).
 
-> **2026-10-10 — 학습은 코랩에서 하기로 변경됐다.** 다운로드부터 학습·결과 전달까지의 전체 절차는
-> [`docs/finetuning-handoff.md`](finetuning-handoff.md)에 있다. 이 문서(WSL+CUDA 설치)는 데스크탑에서
-> 직접 학습할 경우에만 필요하므로 참고용으로 남겨둔다. **다운로드 자체는 여전히 국내 IP에서 해야 하므로
-> 6~8절(aihubshell·압축 해제·무결성 확인)은 코랩 경로에서도 그대로 쓴다.**
+> **2026-10-10** — 받을 데이터 목록과 실행 명령은 [`docs/finetuning-handoff.md`](finetuning-handoff.md)에
+> 따로 정리했다. 이 문서는 데스크탑 환경 설치(WSL·CUDA) 쪽이다.
 
 ## 왜 WSL인가
 
