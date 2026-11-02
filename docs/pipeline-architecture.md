@@ -129,7 +129,7 @@ class Frame:
 class VehicleBox:
     x1: float; y1: float; x2: float; y2: float   # 픽셀 좌표
     confidence: float
-    class_id: int              # car, truck, bus 등
+    class_id: int              # 가중치의 클래스 id — COCO면 car=2 등, 파인튜닝이면 vehicle=0
 ```
 
 **처리**
@@ -153,6 +153,8 @@ class VehicleBox:
 **성능 예산** 50ms (검출 수행 프레임 기준)
 
 **파인튜닝 라벨 클래스 매핑 (2026-09-27, AI Hub 도로주행영상 라벨 분석)** — `VEHICLE_CLASS_IDS = {2, 3, 5, 7}`(car/motorcycle/bus/truck, `src/detection/detector.py`)가 이미 차종 구분 없이 "차량"으로 단일 취급하고, `class_id`는 TRACKING(ByteTrack) 내부 처리 외에는 RISK·METRICS·EVENT 어디에서도 참조되지 않는다. 이 시스템에 차종 분류는 애초에 불필요하다는 뜻이므로, AI Hub 라벨의 `Vehicle_Car`/`Vehicle_Bus`/`Vehicle_Motorcycle`/`Vehicle_Unknown`은 파인튜닝 시 **전부 단일 `vehicle` 클래스로 병합**한다. `Vehicle_Unknown`(bb 기준 15,273건, 전체 차량 라벨의 약 22%)을 제외할 근거를 찾기 위해 bbox 크기를 `Vehicle_Car`와 비교했으나 중앙값이 거의 동일해(70px vs 68px, 원거리 소형 객체라서 분류 불가였다는 가설과 불일치) 크기 기반 제외 근거도 없었다 — 그래서 배제하지 않고 포함한다. `pg`(폴리곤) 카테고리의 차량 라벨은 bbox가 아니므로 파인튜닝에 쓰려면 외접 사각형으로 변환하는 과정이 별도로 필요하다.
+
+**차량 클래스는 id가 아니라 이름으로 고른다 (v0.15)** — 위 병합 결과, 파인튜닝 가중치의 클래스는 `vehicle`(id 0) 하나뿐이다. 그런데 차량 필터가 COCO id `{2, 3, 5, 7}`로 하드코딩돼 있어, 가중치만 바꾸면 id 0(COCO에선 person)이 전부 버려져 **에러 없이 차량이 하나도 안 잡히는** 상태였다. 이제 `detection.vehicle_class_names`(`car`·`motorcycle`·`bus`·`truck`·`vehicle`)를 가중치 메타데이터의 클래스 이름과 대조한다 — .pt·ONNX·NCNN 모두 이름이 실려 오므로 사전학습/파인튜닝 가중치를 바꿔도 config를 고칠 필요가 없고, 하나도 안 맞으면 시작 시점에 에러로 멈춘다.
 
 ---
 
@@ -505,7 +507,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
-| 0.15 | 2026-11-02 | **차선 인식 방식 교체 + 보정값 확정 + 차로 배정** — `notebook/safewatch_lane_calib.ipynb`의 AI Hub 정답 라벨 검증 결과 반영. 3.3: 조감도 우선 top-hat 마스크, 무채색 흰색, 가장 안쪽 쌍, 평행 제약 sliding window, 공유 형상 피팅, 신뢰도를 곱(적중률×잔차×폭 타당성)으로 교체 — 이전 방식의 고신뢰 오답(난간·터널 벽 오인) 8건이 0건이 됨. `src_points_ratio`를 placeholder에서 `60_전방` 보정값으로, `warp_size`를 256×384로, 사다리꼴 여백(`margin_ratio` 0.18) 추가. 3.5: 옆 차로 차량을 자기 차로 기준으로 재도록 차로 배정·연속 횡위치·히스테리시스 추가(`OffsetSample.lane_index`, `position_m`). 5장: 캘리브레이션 절차 부분 해결, "차선 인식 가용률" 미결 사항 신설 |
+| 0.15 | 2026-11-02 | **차량 클래스를 이름으로 선택** (3.2) — 파인튜닝 가중치(`vehicle`=0)로 바꾸면 하드코딩된 COCO id 때문에 차량이 전부 버려지던 문제 해결, `detection.vehicle_class_names` 추가. **차선 인식 방식 교체 + 보정값 확정 + 차로 배정** — `notebook/safewatch_lane_calib.ipynb`의 AI Hub 정답 라벨 검증 결과 반영. 3.3: 조감도 우선 top-hat 마스크, 무채색 흰색, 가장 안쪽 쌍, 평행 제약 sliding window, 공유 형상 피팅, 신뢰도를 곱(적중률×잔차×폭 타당성)으로 교체 — 이전 방식의 고신뢰 오답(난간·터널 벽 오인) 8건이 0건이 됨. `src_points_ratio`를 placeholder에서 `60_전방` 보정값으로, `warp_size`를 256×384로, 사다리꼴 여백(`margin_ratio` 0.18) 추가. 3.5: 옆 차로 차량을 자기 차로 기준으로 재도록 차로 배정·연속 횡위치·히스테리시스 추가(`OffsetSample.lane_index`, `position_m`). 5장: 캘리브레이션 절차 부분 해결, "차선 인식 가용률" 미결 사항 신설 |
 | 0.14 | 2026-10-01 | **GPS/IMU 입력 경로 인터페이스 구현** — `src/input/sensors.py`(`SensorSource` Protocol, `DummySensorSource`, `UnavailableSensorSource`, `SerialGPSIMUSource` 스텁). `main.py`가 `ego_speed_kmh=None` 하드코딩을 걷어내고 이 경로로 읽도록 변경 — `lane_departure`의 속도 게이팅(1.3)을 PC(`dev.yaml`, dummy 80km/h)에서 처음으로 끝까지 테스트할 수 있게 됨. `pi5.yaml`은 ESP32 프로토콜 미확정이라 안전 기본값(`unavailable`, 항상 미수신)을 그대로 써 동작은 이전과 동일하게 유지. 5장 "GPS/위치 데이터 입력 경로" 미결 사항 갱신 |
 | 0.13 | 2026-10-01 | **NCNN export 구현** — `scripts/export_model.py --format ncnn`(`export_ncnn`, `verify_ncnn`). 예상과 달리 `onnx2ncnn`이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환(ONNX export와 독립된 경로). `ncnn`·`pnnx==20260526`(세그폴트 회피 핀) 의존성 추가. 640/320 두 해상도, `--fp16` 옵션, `src/main.py` 전체 파이프라인 통합까지 개발 PC에서 에러 없이 확인. 5장 "추론 엔진" 미결 사항에 1회성 비교 수치(참고용, Pi5 수치 아님) 반영 |
 | 0.12 | 2026-10-01 | **데이터셋 비의존 항목 완성** — ①`src/risk/frame_quality.py`(`FrameQualityChecker`, Laplacian 분산 블러·평균 밝기 급변 검사)로 RISK 입력 게이팅의 "프레임 품질" 항목 구현, `RiskScorer.assess()`에 `frame_quality_ok` 인자 추가. ②`src/event/queue.py`(`EventQueue`)로 로컬 SQLite Store-and-Forward 큐 구현 — 메타/클립 전송 상태 분리 추적, `event_id` 중복 적재 방지. ③`src/event/clip.py`(`ClipProvider` Protocol, `NullClipProvider`)로 HW 링 버퍼 요청 인터페이스의 AI 파트 쪽 타입 계약 정의. ④`src/privacy/face_blur.py`(`FaceBlurrer`)로 Haar cascade 기반 얼굴 블러 구현 — "얼굴 블러 검출 방식" 미결 사항 해소. `main.py`에 전부 연결(클립·네트워크 전송 제외). 부수적으로 `requirements.txt`의 `opencv-python` 상한을 `<5.0`으로 고정(5.0부터 `CascadeClassifier`·번들 haarcascade가 빠져 얼굴 블러가 깨짐을 확인) |

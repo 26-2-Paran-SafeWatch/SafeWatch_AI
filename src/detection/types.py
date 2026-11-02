@@ -12,7 +12,7 @@ class VehicleBox:
     x2: float
     y2: float
     confidence: float
-    class_id: int  # COCO 클래스 id (car=2, motorcycle=3, bus=5, truck=7)
+    class_id: int  # 가중치의 클래스 id — COCO면 car=2·bus=5…, 파인튜닝(단일 클래스)이면 vehicle=0
 
     @property
     def center_x(self) -> float:

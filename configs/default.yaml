@@ -26,6 +26,10 @@ detection:
   engine: pytorch              # pytorch | onnxruntime | ncnn
   roi_top_ratio: 0.45          # 프레임 상단 이 비율만큼 제외 (하늘 영역)
   center_region_ratio: 0.7     # 전방 차량 필터링 — 프레임 폭 중앙 이 비율 안의 차량만 채택
+  # 차량으로 취급할 클래스 이름 — 가중치 메타데이터의 이름과 맞춘다(id가 아니라 이름).
+  # COCO 사전학습: car·motorcycle·bus·truck / 파인튜닝(notebook/safewatch_vehicle_finetune): vehicle
+  # 둘 다 적어 두면 가중치를 바꿔도 config를 고칠 필요가 없다. 하나도 안 맞으면 시작 시 에러
+  vehicle_class_names: [car, motorcycle, bus, truck, vehicle]
 
 lane:
   # 차선 인식 (src/lane). 방식과 값의 근거는 pipeline-architecture.md 3.3, risk-criteria.md 4.1.
