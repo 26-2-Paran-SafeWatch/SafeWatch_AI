@@ -1,7 +1,7 @@
 """YOLOv8n 기반 차량 검출. docs/pipeline-architecture.md 3.2 참고.
 
 처리 순서 (문서와 동일):
-1. ROI 크롭 — 하늘 영역 제외
+1. ROI 크롭 — `detection.roi_top_ratio`만큼 위를 자른다 (기본 0 — 가까운 차량이 잘려 꺼 둠, 문서 3.2)
 2. YOLOv8n 추론 (confidence·NMS는 ultralytics 내부 처리)
 3. 차량 클래스 필터링 — 가중치에 실린 클래스 이름으로 고른다 (`detection.vehicle_class_names`)
 4. 좌표를 원본 프레임 기준으로 역변환
