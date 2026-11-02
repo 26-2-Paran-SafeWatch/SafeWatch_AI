@@ -23,9 +23,11 @@ from src.tracking.types import TrackedVehicle
 from src.utils.config import load_config
 
 FRAME_H, FRAME_W = 720, 1280
-BEV_LEFT_X, BEV_RIGHT_X = 150.0, 490.0
-BEV_CENTER_X = (BEV_LEFT_X + BEV_RIGHT_X) / 2      # 320
-BEV_LANE_WIDTH = BEV_RIGHT_X - BEV_LEFT_X          # 340
+# 보정이 맞으면 자차 차선은 조감도 폭(256)의 margin_ratio(0.18) 안쪽에 온다
+BEV_LEFT_X, BEV_RIGHT_X = 0.18 * 256, 0.82 * 256   # 46.08, 209.92
+BEV_CENTER_X = (BEV_LEFT_X + BEV_RIGHT_X) / 2      # 128
+BEV_LANE_WIDTH = BEV_RIGHT_X - BEV_LEFT_X          # 163.84
+BEV_PROBE_Y = 300.0                                # 조감도 높이 384 중 아래쪽 — 차량을 놓는 행
 LANE_WIDTH_M = 3.5
 
 
@@ -55,7 +57,7 @@ def road_image(detector: LaneDetector) -> np.ndarray:
     return image
 
 
-def _vehicle_at_bev(detector: LaneDetector, bev_x: float, bev_y: float = 500.0,
+def _vehicle_at_bev(detector: LaneDetector, bev_x: float, bev_y: float = BEV_PROBE_Y,
                     track_id: int = 1) -> TrackedVehicle:
     """BEV 좌표로 지정한 위치에 차량을 놓는다 (박스는 원본 프레임 좌표계)."""
     origin = detector.perspective.unwarp_points(np.array([[bev_x, bev_y]], np.float32))[0]
@@ -79,8 +81,8 @@ def test_synthetic_road_is_recognized_as_valid_lane(detector: LaneDetector, road
     """합성 도로에서 차선이 원래 정의한 BEV 위치로 복원된다."""
     lane = detector.detect(road_image)
     assert lane.valid is True
-    assert np.polyval(lane.left_fit, 360) == pytest.approx(BEV_LEFT_X, abs=8)
-    assert np.polyval(lane.right_fit, 360) == pytest.approx(BEV_RIGHT_X, abs=8)
+    assert np.polyval(lane.left_fit, BEV_PROBE_Y) == pytest.approx(BEV_LEFT_X, abs=4)
+    assert np.polyval(lane.right_fit, BEV_PROBE_Y) == pytest.approx(BEV_RIGHT_X, abs=4)
 
 
 @pytest.mark.parametrize(
@@ -120,10 +122,25 @@ def test_vehicle_drifting_right_produces_positive_lateral_velocity(
     calculator = OffsetCalculator(cfg, detector.perspective)
 
     for i in range(20):
-        bev_x = BEV_CENTER_X + i * 3.0
+        bev_x = BEV_CENTER_X + i * 1.5
         calculator.update([_vehicle_at_bev(detector, bev_x)], lane, timestamp=i * 0.1)
 
     series = calculator.series[1]
     assert series.latest.offset_ratio > 0
     assert series.latest.lateral_velocity_mps > 0
     assert series.max_offset_ratio > 0.1
+
+
+def test_adjacent_lane_vehicle_is_measured_in_its_own_lane(cfg, detector: LaneDetector, road_image):
+    """옆 차로 정중앙 차량 — 자차 차로 기준이면 offset +1이지만 자기 차로 기준 0이어야 한다.
+
+    차로 배정이 없으면 이 차량이 차선 걸침 임계(0.25)를 항상 넘는다 (risk-criteria.md 2.1).
+    """
+    lane = detector.detect(road_image)
+    calculator = OffsetCalculator(cfg, detector.perspective)
+    vehicle = _vehicle_at_bev(detector, BEV_CENTER_X + BEV_LANE_WIDTH)
+
+    sample = calculator.update([vehicle], lane, timestamp=0.0)[1].latest
+
+    assert sample.lane_index == 1
+    assert sample.offset_ratio == pytest.approx(0.0, abs=0.03)

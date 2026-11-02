@@ -30,7 +30,7 @@ class _IdentityPerspective:
     """원본 좌표를 그대로 BEV 좌표로 쓰는 가짜 변환기.
 
     실제 `PerspectiveTransformer`는 카메라 캘리브레이션(`src_points_ratio`)에
-    의존하는데 그 값이 아직 placeholder라, 변환 품질과 offset 산출 로직을
+    의존하는데 그 값이 우리 카메라 값이 아니라(AI Hub 보정값), 변환 품질과 offset 산출 로직을
     분리해서 보기 위해 항등 변환을 쓴다.
     """
 
@@ -183,3 +183,62 @@ def test_departure_duration_measures_longest_continuous_span():
         s.offsets.append(OffsetSample(i * 0.1, r * LANE_WIDTH_M, r, 0.0, 0.9, False))
 
     assert s.departure_duration_sec(offset_ratio_threshold=0.3) == pytest.approx(0.6, abs=1e-6)
+
+
+# ── 차로 배정 (risk-criteria.md 2.1) ──────────────────────────────────────────
+
+def _lane_at(left_x: float) -> LaneModel:
+    """같은 폭의 차로를 left_x부터 그린다 — 자차가 차로를 바꾼 상황을 흉내낼 때 쓴다."""
+    lane = _lane()
+    lane.left_fit = np.poly1d([0.0, 0.0, left_x])
+    lane.right_fit = np.poly1d([0.0, 0.0, left_x + LANE_WIDTH_PX])
+    return lane
+
+
+def test_vehicle_beyond_max_lane_index_is_skipped(calculator: OffsetCalculator):
+    """두 차로 밖(lane_index 2)은 차선 외삽을 믿을 수 없어 제외한다."""
+    series = calculator.update([_vehicle(LANE_CENTER_X + 2 * LANE_WIDTH_PX)], _lane(), 0.0)
+    assert series == {}
+
+
+def test_straddling_vehicle_does_not_flip_sign(calculator: OffsetCalculator):
+    """선을 밟고 달리는 차량 — offset이 경계(±0.5) 근처를 오가도 부호가 뒤집히지 않는다.
+
+    히스테리시스가 없으면 매 프레임 +0.5/−0.5로 뒤집혀 사행의 방향 전환으로
+    세지고, 차선 걸침 하나가 사행까지 켜 버린다.
+    """
+    for i in range(30):
+        jitter = 6.0 if i % 2 else -6.0
+        calculator.update([_vehicle(LANE_RIGHT_X + jitter)], _lane(), timestamp=i * 0.1)
+
+    series = calculator.series[1]
+    assert all(s.offset_ratio > 0.4 for s in series.offsets)
+    assert series.direction_changes(min_amplitude_ratio=0.1) == 0
+
+
+def test_lane_change_keeps_lateral_velocity_continuous(calculator: OffsetCalculator):
+    """차로 변경 — 차로 배정이 바뀌는 순간 offset은 점프하지만 속도는 튀지 않는다."""
+    step_px = LANE_WIDTH_PX / 20                     # 2초 동안 차로 하나 이동한 뒤 그 차로에 머문다
+    for i in range(26):
+        x = LANE_CENTER_X + min(i, 20) * step_px     # 마지막 5프레임은 평활화 지연이 빠지도록 정지
+        calculator.update([_vehicle(x)], _lane(), timestamp=i * 0.1)
+
+    series = calculator.series[1]
+    expected_mps = LANE_WIDTH_M / 2.0
+    assert series.latest.lane_index == 1
+    assert series.latest.offset_ratio == pytest.approx(0.0, abs=0.05)
+    assert series.peak_lateral_velocity_mps < expected_mps * 1.3
+
+
+def test_ego_lane_change_does_not_move_other_vehicles(calculator: OffsetCalculator):
+    """자차가 차로를 바꾸면 기준 차로가 한 칸 밀린다 — 가만히 있는 차량에 속도가 생기면 안 된다."""
+    vehicle_x = LANE_CENTER_X + LANE_WIDTH_PX       # 처음엔 우측 차로 정중앙
+    for i in range(10):
+        calculator.update([_vehicle(vehicle_x)], _lane(), timestamp=i * 0.1)
+    for i in range(10, 20):                          # 자차가 우측 차로로 이동 → 그 차량이 자차 차로가 됨
+        calculator.update([_vehicle(vehicle_x)], _lane_at(LANE_RIGHT_X), timestamp=i * 0.1)
+
+    series = calculator.series[1]
+    assert series.latest.lane_index == 0
+    assert series.latest.offset_ratio == pytest.approx(0.0, abs=0.01)
+    assert series.peak_lateral_velocity_mps == pytest.approx(0.0, abs=1e-6)
