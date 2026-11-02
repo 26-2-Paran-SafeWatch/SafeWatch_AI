@@ -29,7 +29,11 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def detector() -> VehicleDetector:
+    """COCO 사전학습 가중치로 고정한다 — bus.jpg는 대시캠 시점이 아닌 일반 사진이라
+    파인튜닝 가중치(기본값)로는 검출 신뢰도가 낮고, 여기서 보려는 것은 검출 경로
+    자체(좌표 역변환·클래스 필터)이기 때문이다."""
     cfg = load_config("configs/dev.yaml")
+    cfg.to_dict()["detection"]["weights"] = "data/models/yolov8n.pt"
     return VehicleDetector(cfg)
 
 

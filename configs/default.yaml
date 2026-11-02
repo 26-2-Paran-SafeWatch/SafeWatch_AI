@@ -19,9 +19,14 @@ sensors:
 
 detection:
   model: yolov8n
-  weights: data/models/yolov8n.pt
+  # 파인튜닝 가중치 (notebook/safewatch_vehicle_finetune, vehicle_v1 — 단일 클래스 vehicle, imgsz 320).
+  # 배포 조건 검증 494장 판정 영역 F1 0.253(사전학습) → 0.684. data/는 커밋하지 않으므로 드라이브에서 받아 둔다.
+  # 사전학습으로 되돌리려면 data/models/yolov8n.pt — vehicle_class_names가 둘 다 처리한다
+  weights: data/models/yolov8n-safewatch.pt
   interval: 1                 # N프레임마다 검출 실행, 중간은 tracking이 보간
-  conf_threshold: 0.5
+  # 이 이상은 전부 추적기로 넘긴다 — 0.5 미만은 기존 트랙을 잇는 데만 쓰인다 (tracking.track_low_thresh와 같은 값).
+  # 근거 risk-criteria.md 4.1 "객체 검출 신뢰도" [TBD — 연속 영상으로 트랙 끊김 재측정 필요]
+  conf_threshold: 0.1
   iou_threshold: 0.45          # NMS IoU 임계값
   engine: pytorch              # pytorch | onnxruntime | ncnn
   roi_top_ratio: 0.45          # 프레임 상단 이 비율만큼 제외 (하늘 영역)
@@ -74,9 +79,9 @@ tracking:
   # 아래는 ultralytics 내장 BYTETracker에 그대로 전달하는 값이다.
   # ultralytics 기본값(cfg/trackers/bytetrack.yaml)을 출발점으로 두고,
   # ID switching 빈도를 BDD100K MOT 서브셋으로 측정하며 조정한다 (sprint-plan.md S3).
-  track_high_thresh: 0.25      # 1차 매칭에 쓸 검출 신뢰도 하한
+  track_high_thresh: 0.5       # 1차 매칭에 쓸 검출 신뢰도 하한 — 검출 단독 Precision 0.90 수준 (risk-criteria.md 4.1)
   track_low_thresh: 0.1        # 2차 매칭(가려짐 복구)용 하한
-  new_track_thresh: 0.25       # 새 track 생성 기준 — 높일수록 허위 track 감소
+  new_track_thresh: 0.5        # 새 track 생성 기준 — 높일수록 허위 track 감소. 이전 검출 컷(0.5)과 같은 품질로 트랙을 만든다
   track_buffer: 30             # lost track 유지 프레임 수. 앞차에 가려지는 구간을 버틴다
   match_thresh: 0.8            # IoU 기반 연관 임계값
   fuse_score: true             # 검출 점수를 매칭 비용에 반영

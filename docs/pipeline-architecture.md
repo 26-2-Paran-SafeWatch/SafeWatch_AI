@@ -1,6 +1,6 @@
 # 파이프라인 구조 설계서
 
-**버전** 0.15 (차선 인식 방식 교체 + 보정값 확정 + 차로 배정)
+**버전** 0.16 (검출·추적 2단계 신뢰도 기준)
 **작성** 설만수
 **최종 수정** 2026-11-02
 
@@ -257,6 +257,8 @@ class TrackedVehicle:
 
 `tracked_frames`가 config의 최소값(기본 30프레임) 미만인 차량은 거동 분석 대상에서 제외한다. 잠깐 스쳐간 차량의 거동은 신뢰할 수 없다.
 
+**검출 신뢰도와 추적 기준 (v0.16)** — DETECTION은 0.1 이상 박스를 모두 넘기고(`detection.conf_threshold`), TRACKING이 2단계로 쓴다. 0.5 이상(`track_high_thresh`)은 1차 매칭과 새 트랙 생성(`new_track_thresh`)에, 0.1~0.5(`track_low_thresh`~)는 이미 있는 트랙을 잇는 2차 매칭에만 쓴다. v0.15까지는 DETECTION이 0.5 미만을 먼저 버려 2차 매칭이 작동하지 않았다. 근거와 측정 수치는 `risk-criteria.md` 4.1 "객체 검출 신뢰도".
+
 **성능 예산** 10ms
 
 ---
@@ -507,6 +509,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| 0.16 | 2026-11-02 | **검출·추적 2단계 신뢰도 기준** (3.4) — 검출 0.5 컷이 ByteTrack 2차 매칭을 막던 문제 해결. `detection.conf_threshold` 0.5→0.1, `tracking.track_high_thresh`·`new_track_thresh` 0.25→0.5(새 트랙 생성 품질은 이전과 동일) |
 | 0.15 | 2026-11-02 | **차량 클래스를 이름으로 선택** (3.2) — 파인튜닝 가중치(`vehicle`=0)로 바꾸면 하드코딩된 COCO id 때문에 차량이 전부 버려지던 문제 해결, `detection.vehicle_class_names` 추가. **차선 인식 방식 교체 + 보정값 확정 + 차로 배정** — `notebook/safewatch_lane_calib.ipynb`의 AI Hub 정답 라벨 검증 결과 반영. 3.3: 조감도 우선 top-hat 마스크, 무채색 흰색, 가장 안쪽 쌍, 평행 제약 sliding window, 공유 형상 피팅, 신뢰도를 곱(적중률×잔차×폭 타당성)으로 교체 — 이전 방식의 고신뢰 오답(난간·터널 벽 오인) 8건이 0건이 됨. `src_points_ratio`를 placeholder에서 `60_전방` 보정값으로, `warp_size`를 256×384로, 사다리꼴 여백(`margin_ratio` 0.18) 추가. 3.5: 옆 차로 차량을 자기 차로 기준으로 재도록 차로 배정·연속 횡위치·히스테리시스 추가(`OffsetSample.lane_index`, `position_m`). 5장: 캘리브레이션 절차 부분 해결, "차선 인식 가용률" 미결 사항 신설 |
 | 0.14 | 2026-10-01 | **GPS/IMU 입력 경로 인터페이스 구현** — `src/input/sensors.py`(`SensorSource` Protocol, `DummySensorSource`, `UnavailableSensorSource`, `SerialGPSIMUSource` 스텁). `main.py`가 `ego_speed_kmh=None` 하드코딩을 걷어내고 이 경로로 읽도록 변경 — `lane_departure`의 속도 게이팅(1.3)을 PC(`dev.yaml`, dummy 80km/h)에서 처음으로 끝까지 테스트할 수 있게 됨. `pi5.yaml`은 ESP32 프로토콜 미확정이라 안전 기본값(`unavailable`, 항상 미수신)을 그대로 써 동작은 이전과 동일하게 유지. 5장 "GPS/위치 데이터 입력 경로" 미결 사항 갱신 |
 | 0.13 | 2026-10-01 | **NCNN export 구현** — `scripts/export_model.py --format ncnn`(`export_ncnn`, `verify_ncnn`). 예상과 달리 `onnx2ncnn`이 아니라 PNNX가 PyTorch 그래프를 직접 추적해 변환(ONNX export와 독립된 경로). `ncnn`·`pnnx==20260526`(세그폴트 회피 핀) 의존성 추가. 640/320 두 해상도, `--fp16` 옵션, `src/main.py` 전체 파이프라인 통합까지 개발 PC에서 에러 없이 확인. 5장 "추론 엔진" 미결 사항에 1회성 비교 수치(참고용, Pi5 수치 아님) 반영 |
