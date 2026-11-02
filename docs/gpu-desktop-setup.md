@@ -65,6 +65,7 @@ chmod 600 ~/.aihub_api_key
 **⚠️ AI Hub 공식 `aihubshell`을 그대로 받지 말고 이 저장소의 패치 버전을 쓴다.** 원본에는 버그가 2개 있다 (`scripts/aihubshell_fixed.sh` 상단 주석 및 `docs/sprint-plan.md` "aihubshell 자체 버그 2개" 참고):
 1. 다운로드가 중간에 끊겨도 항상 "성공"으로 처리하는 버그
 2. 조각 파일이 여러 개(대용량 파일)일 때 병합 순서가 뒤섞이는 버그 — 실제로 14GB짜리 파일에서 매번 재현됨
+3. (우리 패치가 만든 버그, 2026-11-02 수정) macOS bash 3.2에서 한글 파일명 조각을 못 찾고 빈 파일로 "병합 완료" 처리 — 이제 병합 크기를 검증하고, 안 맞으면 조각을 남긴 채 실패로 끝난다
 
 ```bash
 mkdir -p data/raw/aihub && cd data/raw/aihub

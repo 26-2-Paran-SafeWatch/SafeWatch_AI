@@ -16,12 +16,20 @@
 #   개(대용량 파일)면 순서가 뒤섞여 병합되어 파일이 깨짐.
 #   → part 뒤 숫자만 뽑아 진짜 숫자로 정렬하도록 수정.
 #
+#   [버그 3 — 우리 패치가 만든 것, 2026-11-02] 버그 2를 고치며 넣은
+#   printf '%q'가 macOS 기본 bash 3.2에서 한글 파일명을 $'\353...'로
+#   이스케이프해, find가 조각을 하나도 못 찾았다. 그런데도 빈 파일을 만들고
+#   조각을 지운 뒤 "병합이 완료"를 출력해 받은 데이터가 통째로 사라졌다
+#   (WSL의 bash 5는 한글을 이스케이프하지 않아 재현되지 않음).
+#   → 조각을 셸 글롭으로 직접 모으고, 병합 크기가 조각 크기 합과 같을 때만
+#     조각과 download.tar를 지운다. 다르면 조각을 남기고 실패로 끝낸다.
+#
 # 사용법은 원본과 동일:
 #   ./aihubshell_fixed.sh -mode l -datasetkey <dataSetSn>
 #   ./aihubshell_fixed.sh -aihubapikey <키> -mode d -datasetkey <dataSetSn> -filekey <filekey1,filekey2,...>
 
 echo "=========================================="
-echo "aihubshell version 25.09.19 v0.6 (SafeWatch 패치: 버그 2개 수정)"
+echo "aihubshell version 25.09.19 v0.6 (SafeWatch 패치: 버그 3개 수정)"
 echo "=========================================="
 
 VER="0.6"
@@ -121,36 +129,72 @@ down_func() {
         tar -xvf download.tar
 
         echo '잠시 기다려 주세요 병합중 입니다. '
+        merge_failed=0
         merge_parts() {
             local target_dir="$1"
 
             for prefix in $(ls "$target_dir" | grep '.*\.part[0-9]*$' | sed 's/\(.*\)\.part[0-9]*$/\1/' | sort -u); do
-                escaped_prefix=$(printf '%q' "$prefix")
                 echo "Merging $prefix in $target_dir"
 
                 # [SafeWatch 패치 - 버그 2] part 뒤 숫자(바이트 오프셋)만 뽑아
                 # 진짜 숫자로 정렬한다. 원본은 "이름.zip.partNNNN"을 '.'으로
                 # 나눈 2번째 필드("zip", 모든 조각이 동일)로 정렬해 조각이
                 # 여러 개일 때 순서가 뒤섞였다.
+                # [SafeWatch 패치 - 버그 3] 조각은 find -name 패턴이 아니라 셸 글롭으로
+                # 모은다 — 파일 이름을 패턴으로 바꾸지 않으니 한글·특수문자에 안전하다.
+                local parts=() expected=0 f size unreadable=0
+                for f in "${target_dir}/${prefix}".part*; do
+                    [ -f "$f" ] || continue
+                    if ! size=$(wc -c < "$f" 2>/dev/null) || ! [[ $size =~ ^[[:space:]]*[0-9]+$ ]]; then
+                        echo "ERROR: 조각을 읽을 수 없음: $f"
+                        unreadable=1
+                        break
+                    fi
+                    parts+=("$f")
+                    expected=$((expected + size))
+                done
+                if [ "$unreadable" -ne 0 ] || [ ${#parts[@]} -eq 0 ]; then
+                    [ ${#parts[@]} -eq 0 ] && [ "$unreadable" -eq 0 ] && echo "ERROR: ${prefix} 조각을 찾지 못함"
+                    echo "  → ${prefix} 병합하지 않음, 조각은 그대로 둠"
+                    merge_failed=1
+                    continue
+                fi
+
                 : > "${target_dir}/${prefix}"
-                find "${target_dir}" -name "${escaped_prefix}.part*" -print0 |
-                    while IFS= read -r -d '' f; do
-                        printf '%s\t%s\n' "${f##*.part}" "$f"
-                    done | sort -n -k1,1 | cut -f2- |
+                for f in "${parts[@]}"; do
+                    printf '%s\t%s\n' "${f##*.part}" "$f"
+                done | sort -n -k1,1 | cut -f2- |
                     while IFS= read -r f; do
                         cat "$f" >> "${target_dir}/${prefix}"
                     done
 
-                rm "${target_dir}/${prefix}".part*
+                local actual
+                actual=$(wc -c < "${target_dir}/${prefix}")
+                if [ "$actual" -ne "$expected" ]; then
+                    echo "ERROR: ${prefix} 병합 크기 ${actual} ≠ 조각 합 ${expected} — 조각을 지우지 않고 남김"
+                    merge_failed=1
+                    continue
+                fi
+                echo "  ${#parts[@]}개 조각, ${actual} bytes 확인"
+                rm "${parts[@]}"
             done
         }
 
-        find . -type d | while read -r dir; do
+        # 하위 셸(파이프 while)에서는 merge_failed가 밖으로 안 나오므로 목록을 먼저 만든다
+        dirs=()
+        while IFS= read -r dir; do
             if [[ ! -z $(find "$dir" -maxdepth 1 -name '*.part*') ]]; then
-                merge_parts "$dir"
+                dirs+=("$dir")
             fi
+        done < <(find . -type d)
+        for dir in "${dirs[@]}"; do
+            merge_parts "$dir"
         done
 
+        if [ "$merge_failed" -ne 0 ]; then
+            echo '병합 실패 — 조각과 download.tar를 남겼다. 위 ERROR를 확인할 것'
+            exit 1
+        fi
         echo '병합이 완료 되었습니다. '
         rm download.tar
     else
