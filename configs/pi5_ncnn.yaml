@@ -1,0 +1,9 @@
+# Pi5 — 추론 엔진 비교용 (ONNX vs NCNN, pipeline-architecture.md 5장 "추론 엔진" 미결 사항).
+# pi5.yaml과 전부 같고 검출 가중치만 NCNN이다. 엔진은 가중치 경로로 정해진다
+# (ultralytics가 .onnx 파일 / *_ncnn_model 디렉터리를 보고 고른다).
+
+extends: pi5.yaml
+
+detection:
+  engine: ncnn
+  weights: data/models/yolov8n-safewatch_ncnn_model
