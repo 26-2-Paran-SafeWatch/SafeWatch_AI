@@ -4,8 +4,8 @@
 `fs`(자유공간)는 bbox 형식이 아니라 별도 변환이 필요해 이 스크립트의
 대상이 아니다.
 
-차종 구분 없이 단일 `vehicle` 클래스로 병합한다 — src/detection/detector.py의
-`VEHICLE_CLASS_IDS`가 이미 차종을 구분하지 않고, class_id가 RISK·METRICS·
+차종 구분 없이 단일 `vehicle` 클래스로 병합한다 — src/detection/detector.py가
+이미 차종을 구분하지 않고(`detection.vehicle_class_names`), class_id가 RISK·METRICS·
 EVENT 어디에서도 쓰이지 않기 때문이다(docs/pipeline-architecture.md 3.2
 "파인튜닝 라벨 클래스 매핑" 참고). `Vehicle_Unknown`도 bbox 크기 분포상
 제외할 근거가 없어 포함한다.
