@@ -79,6 +79,9 @@ def run(config_path: str, source: str) -> None:
     clip_provider = NullClipProvider()  # HW 링 버퍼 인터페이스 확정 전까지 항상 클립 없음
     event_queue = EventQueue(Path(cfg.event.queue_dir) / "events.db")
     sensor_source = create_sensor_source(cfg)
+    # 차선 검출의 차량 영역 제외용 — 검출 주기(interval) 사이 프레임은 직전 검출 박스를
+    # 그대로 쓴다. 몇 프레임 동안 차가 움직이는 거리는 박스 여유(pad_ratio)보다 작다.
+    last_boxes: list = []
 
     try:
         for frame in frame_source.frames():
@@ -90,6 +93,7 @@ def run(config_path: str, source: str) -> None:
             #    전진시키지 않아 횡방향 속도가 왜곡된다 (S6 항목, tracker.py 참고).
             if frame.frame_id % detection_interval == 0:
                 boxes = detector.detect(frame.image)
+                last_boxes = boxes
                 tracks = tracker.update(boxes)
             else:
                 tracks = tracker.interpolate()
@@ -98,7 +102,7 @@ def run(config_path: str, source: str) -> None:
 
             # LANE을 먼저 돌려야 perspective 행렬이 만들어져 METRICS가 좌표를
             # 변환할 수 있다.
-            lane = lane_detector.detect(frame.image)
+            lane = lane_detector.detect(frame.image, vehicle_boxes=last_boxes)
             if not lane.valid and frame.frame_id % 30 == 0:
                 logger.debug(
                     "frame_id=%d 차선 신뢰도 미달(%.2f, 잔차 %s) — offset 지표 제외",

@@ -11,6 +11,12 @@
 5. 공유 형상 피팅 — 두 선을 같은 2차 모양에 위치만 다르게 함께 피팅, 잡음 점 한 번 제거
 6. 신뢰도 — 윈도 적중률 × 피팅 잔차 × 폭 타당성
 
+차량 영역 제외 (`lane.vehicle_exclusion`) — 검출된 차량 박스를 조감도로 옮겨
+차선 후보 마스크에서 지운다. 앞차 옆면·뒷면의 세로 모서리가 "가장 안쪽 쌍"으로
+뽑히는 것을 막고, 차량에 가려 볼 수 없던 윈도는 적중률 분모에서 뺀다
+(못 찾은 것이 아니라 볼 수 없던 것). 노트북 12·14번 셀에서 Pi 해상도(320px)
+기준 오답 0을 유지하며 가용률을 올린 것을 확인했다 (pipeline-architecture.md 3.3).
+
 이전 방식(좌우 절반 최강 피크 + 독립 피팅 + 가중 합산 신뢰도)은 교량 난간·
 터널 벽·가드레일을 차선으로 잡고도 신뢰도 0.55~0.87을 냈다. 위 3~5단계가
 각각 그 실패를 막는다 (pipeline-architecture.md 3.3 "이 방식으로 바꾼 이유").
@@ -28,6 +34,7 @@ import logging
 import cv2
 import numpy as np
 
+from src.detection.types import VehicleBox
 from src.lane.perspective import PerspectiveTransformer
 from src.lane.types import LaneModel
 from src.utils.config import Config
@@ -74,6 +81,12 @@ class LaneDetector:
         self._outlier_k: float = conf_cfg.outlier_k
         self._outlier_min_px: float = conf_cfg.outlier_min_px
 
+        excl_cfg = lane_cfg.vehicle_exclusion
+        self._exclude_vehicles: bool = excl_cfg.enabled
+        self._exclusion_min_conf: float = excl_cfg.min_box_confidence
+        self._exclusion_pad: float = excl_cfg.pad_ratio
+        self._occluded_window_ratio: float = excl_cfg.occluded_window_ratio
+
         self._perspective = PerspectiveTransformer(cfg)
         self._expected_width: float = self._perspective.expected_lane_width_px
 
@@ -82,31 +95,63 @@ class LaneDetector:
         """시각화 등에서 bird's-eye-view ↔ 원본 좌표 변환이 필요할 때 사용."""
         return self._perspective
 
-    def detect(self, image: np.ndarray) -> LaneModel:
-        """원본 프레임을 bird's eye view로 변환한 뒤 차선을 인식한다."""
-        with profiler.stage("lane"):
-            return self.detect_bev(self._perspective.warp(image))
+    def detect(self, image: np.ndarray, vehicle_boxes: list[VehicleBox] | None = None) -> LaneModel:
+        """원본 프레임을 bird's eye view로 변환한 뒤 차선을 인식한다.
 
-    def detect_bev(self, warped: np.ndarray) -> LaneModel:
+        `vehicle_boxes`(원본 프레임 좌표)를 주면 그 영역을 차선 후보에서 뺀다
+        (`lane.vehicle_exclusion.enabled`가 꺼져 있으면 무시).
+        """
+        with profiler.stage("lane"):
+            warped = self._perspective.warp(image)
+            occlusion = None
+            if self._exclude_vehicles and vehicle_boxes:
+                occlusion = self._occlusion_bev(image.shape[:2], vehicle_boxes)
+            return self.detect_bev(warped, occlusion)
+
+    def _occlusion_bev(self, frame_hw: tuple[int, int], boxes: list[VehicleBox]) -> np.ndarray | None:
+        """차량 박스를 원본에서 칠한 뒤 조감도로 옮긴 마스크(0/255).
+
+        차체는 노면 위에 서 있어 조감도에서 세로로 길게 늘어나는데, 박스 픽셀을
+        그대로 옮기므로 늘어난 부분까지 덮는다. 좌우는 `pad_ratio`만큼 넓혀
+        차체 모서리·그림자까지 지운다.
+        """
+        height, width = frame_hw
+        occ = np.zeros((height, width), np.uint8)
+        drawn = False
+        for b in boxes:
+            if b.confidence < self._exclusion_min_conf:
+                continue
+            pad = self._exclusion_pad * (b.x2 - b.x1)
+            x0, x1 = max(0, int(b.x1 - pad)), min(width, int(b.x2 + pad) + 1)
+            y0, y1 = max(0, int(b.y1)), min(height, int(b.y2) + 1)
+            if x1 > x0 and y1 > y0:
+                occ[y0:y1, x0:x1] = 255
+                drawn = True
+        return self._perspective.warp_mask(occ) if drawn else None
+
+    def detect_bev(self, warped: np.ndarray, occlusion: np.ndarray | None = None) -> LaneModel:
         """이미 bird's eye view로 변환된 이미지에서 차선을 인식한다.
 
         perspective 변환을 분리해 둔 것은 변환 품질과 무관하게 인식 알고리즘
-        자체를 합성 조감도로 검증할 수 있게 하기 위해서다.
+        자체를 합성 조감도로 검증할 수 있게 하기 위해서다. `occlusion`은 같은
+        조감도 좌표의 차량 영역 마스크(0이 아니면 차량)다.
         """
         mask = self._mask(warped)
+        if occlusion is not None:
+            mask[occlusion > 0] = 0
         hist = mask[mask.shape[0] // 2:].sum(axis=0) / 255.0
         pair = self._pick_pair(self._find_peaks(hist))
         if pair is None:
             return _INVALID
 
-        left_pts, right_pts = self._sliding_window(mask, pair)
+        left_pts, right_pts, n_occluded = self._sliding_window(mask, pair, occlusion)
         fit = self._fit_shared_shape(left_pts, right_pts)
         if fit is None:
             return _INVALID
         (a, b, c_left, c_right), rms, n_points = fit
 
         width = c_right - c_left
-        confidence = self._confidence(n_points, rms, width)
+        confidence = self._confidence(n_points, rms, width, n_occluded)
         residual_ratio = round(rms / width, 4) if width > 0 else None
         return LaneModel(
             left_fit=np.poly1d([a, b, c_left]),
@@ -172,20 +217,24 @@ class LaneDetector:
         return min(pairs, key=lambda p: p[1] - p[0]) if pairs else None
 
     def _sliding_window(
-        self, mask: np.ndarray, pair: tuple[int, int]
-    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-        """평행 제약 sliding window — 윈도마다 좌/우 차선 점 (x, y).
+        self, mask: np.ndarray, pair: tuple[int, int], occlusion: np.ndarray | None = None
+    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], int]:
+        """평행 제약 sliding window — 윈도마다 좌/우 차선 점 (x, y)과 가려진 윈도 수.
 
         조감도에서 두 차선은 평행하므로 좌우 윈도를 같은 만큼만 옮긴다. 한쪽
         윈도가 옆 구조물 잡음에 끌려가도 다른 쪽이 붙잡는다. 윈도 안 위치는
         픽셀 평균이 아니라 가장 촘촘한 세로 열로 잡는다 — 차선은 폭 좁은 연속
         줄이라 열 밀도가 가장 높고, 넓게 퍼진 잡음은 평균만 끌어당긴다.
+
+        `occlusion`이 있으면 윈도 면적의 `occluded_window_ratio` 이상이 차량인
+        윈도를 "가려진 윈도"로 센다 — 신뢰도의 적중률 분모에서 뺀다.
         """
         height = mask.shape[0]
         window_height = height // self._n_windows
         nonzero_y, nonzero_x = mask.nonzero()
         centers = [float(pair[0]), float(pair[1])]
         points: tuple[list, list] = ([], [])
+        n_occluded = 0
 
         for window in range(self._n_windows):
             y_low = height - (window + 1) * window_height
@@ -194,6 +243,11 @@ class LaneDetector:
             shifts = []
             for side in (0, 1):
                 cx = centers[side]
+                if occlusion is not None:
+                    x0 = int(max(0, cx - self._margin))
+                    x1 = int(min(mask.shape[1], cx + self._margin))
+                    if x1 > x0 and (occlusion[y_low:y_high, x0:x1] > 0).mean() >= self._occluded_window_ratio:
+                        n_occluded += 1
                 sel = in_band & (nonzero_x >= cx - self._margin) & (nonzero_x < cx + self._margin)
                 if sel.sum() <= self._min_pixels:
                     continue
@@ -208,7 +262,7 @@ class LaneDetector:
                 shift = float(np.mean(shifts))
                 centers = [centers[0] + shift, centers[1] + shift]
 
-        return points
+        return points[0], points[1], n_occluded
 
     def _fit_shared_shape(
         self, left: list[tuple[float, float]], right: list[tuple[float, float]]
@@ -246,13 +300,16 @@ class LaneDetector:
         coef = np.linalg.lstsq(design, x, rcond=None)[0]
         return coef, x - design @ coef
 
-    def _confidence(self, n_points: int, rms: float, width: float) -> float:
+    def _confidence(self, n_points: int, rms: float, width: float, n_occluded: int = 0) -> float:
         """윈도 적중률 × 피팅 잔차 × 폭 타당성 (pipeline-architecture.md 3.3).
 
         곱이라 하나만 무너져도 판정이 보류된다. 폭 타당성은 보정이 틀어졌을 때
         (장착 변경·충격) 차로가 기대 폭과 달라 보이는 것을 잡는다.
+        적중률 분모에서 차량에 가려진 윈도를 빼되 `n_windows` 아래로는 내리지
+        않는다 — 절반 넘게 가려진 장면에서 적은 점으로 적중률이 부풀지 않게.
         """
-        hit_rate = n_points / (2 * self._n_windows)
+        total = 2 * self._n_windows
+        hit_rate = min(1.0, n_points / max(total - n_occluded, self._n_windows))
         fit_quality = 1.0 - min(1.0, rms / (self._max_rms_ratio * self._expected_width))
         plausibility = float(np.clip(
             1.0 - abs(width / self._expected_width - 1.0) / self._width_tolerance, 0.0, 1.0

@@ -207,3 +207,64 @@ def test_lane_model_carries_residual_ratio(detector: LaneDetector):
     assert lane.fit_residual_ratio is not None
     assert 0.0 <= lane.fit_residual_ratio < 0.02
     assert lane.lane_width_px == pytest.approx(RIGHT_X - LEFT_X, abs=3)
+
+
+# ── 차량 영역 제외 (lane.vehicle_exclusion, 노트북 12·14번 셀 V 방식) ──
+
+def _car_edges(image: np.ndarray, x0: int, x1: int, y0: int, y1: int) -> None:
+    """앞차 옆면 — 차로 안쪽에 세로로 긴 밝은 모서리 두 줄."""
+    for x in (x0, x1):
+        cv2.rectangle(image, (x, y0), (x + 4, y1), WHITE, -1)
+
+
+def test_lead_car_edges_win_without_exclusion(detector: LaneDetector):
+    """제외 없이 앞차 모서리가 차로 안쪽에 있으면 '가장 안쪽 쌍'으로 뽑혀 진짜 차선을 놓친다.
+
+    Pi 실행에서 차선이 거의 안 잡힌 원인 ② 재현 — 아래 제외 테스트의 대조군.
+    """
+    image = _lanes(dash=48)
+    _car_edges(image, 95, 160, 0, BEV_H)
+    lane = detector.detect_bev(image)
+    assert not (lane.valid and _center_error(lane) < 0.05)
+
+
+def test_vehicle_occlusion_removes_lead_car_edges(detector: LaneDetector):
+    """차량 영역 마스크를 주면 앞차 모서리를 지우고 진짜 차선을 잡는다."""
+    image = _lanes(dash=48)
+    _car_edges(image, 95, 160, 0, BEV_H)
+    occ = np.zeros((BEV_H, BEV_W), np.uint8)
+    occ[:, 85:175] = 255
+    lane = detector.detect_bev(image, occlusion=occ)
+    assert lane.valid is True
+    assert _center_error(lane) < 0.05
+
+
+def test_occluded_windows_do_not_count_as_misses(detector: LaneDetector):
+    """차량이 차선 윗부분을 가린 경우 — 가려진 윈도는 적중률 분모에서 빠진다."""
+    image = _lanes()
+    image[:BEV_H // 3] = ROAD                       # 위 1/3은 차체에 가려 차선이 안 보임
+    occ = np.zeros((BEV_H, BEV_W), np.uint8)
+    occ[:BEV_H // 3] = 255
+    without = detector.detect_bev(image.copy())
+    with_occ = detector.detect_bev(image.copy(), occlusion=occ)
+    assert with_occ.confidence > without.confidence
+
+
+def test_half_occluded_hit_rate_is_not_inflated(detector: LaneDetector):
+    """절반 넘게 가려져도 적중률 분모는 n_windows 아래로 내려가지 않는다."""
+    image = _lanes()
+    image[:int(BEV_H * 0.7)] = ROAD
+    occ = np.zeros((BEV_H, BEV_W), np.uint8)
+    occ[:int(BEV_H * 0.7)] = 255
+    lane = detector.detect_bev(image, occlusion=occ)
+    assert lane.confidence <= 0.6
+
+
+def test_detect_with_boxes_runs_on_full_frame(detector: LaneDetector):
+    """원본 프레임 + 원본 좌표 박스 경로가 크래시 없이 돈다 (낮은 신뢰도 박스는 무시)."""
+    from src.detection.types import VehicleBox
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    boxes = [VehicleBox(560, 400, 720, 520, 0.9, 0), VehicleBox(0, 0, 10, 10, 0.05, 0)]
+    lane = detector.detect(frame, vehicle_boxes=boxes)
+    assert lane.valid is False
+    assert detector.detect(frame, vehicle_boxes=[]).valid is False

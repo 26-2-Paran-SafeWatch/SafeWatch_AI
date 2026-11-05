@@ -45,6 +45,16 @@ class PerspectiveTransformer:
             self._build_matrix(width, height)
         return cv2.warpPerspective(image, self._M, self._warp_size)
 
+    def warp_mask(self, mask: np.ndarray) -> np.ndarray:
+        """단일 채널 마스크(원본 프레임 크기)를 조감도로 옮긴다. 값이 섞이지 않게 최근접 보간.
+
+        `warp()`와 같은 프레임 크기여야 한다 — 행렬을 그 크기로 만든다.
+        """
+        height, width = mask.shape[:2]
+        if self._cached_frame_size != (width, height):
+            self._build_matrix(width, height)
+        return cv2.warpPerspective(mask, self._M, self._warp_size, flags=cv2.INTER_NEAREST)
+
     def warp_points(self, points: np.ndarray) -> np.ndarray:
         """원본 프레임 좌표(Nx2)를 bird's-eye-view 좌표로 변환한다.
 

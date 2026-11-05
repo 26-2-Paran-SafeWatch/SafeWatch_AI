@@ -44,7 +44,17 @@ lane:
   # 아래 px 단위 값은 조감도(warp_size 256×384) 기준이다 — warp_size를 바꾸면 함께 다시 맞춘다.
   # 검증 — notebook/safewatch_lane_calib.ipynb (AI Hub 60_전방 정답 라벨, 2026-11-02)
   lane_width_m: 3.5            # 차로 폭 캘리브레이션 기준
-  min_confidence: 0.5          # 이 미만이면 valid=False → 해당 구간 판정 보류. 통과분 오답 0이 되는 최저값 0.35~0.43 대비 여유
+  # 이 미만이면 valid=False → 해당 구간 판정 보류. 0.5 → 0.47 (2026-11-05, 노트북 14번 셀):
+  # 차량 제외를 켠 상태에서 0.45·0.48 모두 원본·320px 검증 오답 0, 틀어짐 통과 0.
+  # 오답 conf 최고 0.428보다 0.04 위. 320px 가용률 14% → 17~19%
+  min_confidence: 0.47
+  vehicle_exclusion:
+    # 검출된 차량 박스를 조감도로 옮겨 차선 후보에서 지운다 (앞차 모서리를 차선으로 오인 방지,
+    # 가려진 윈도는 적중률 분모에서 제외). 노트북 12번 셀 V 방식
+    enabled: true
+    min_box_confidence: 0.25   # 이 이상인 검출만 지운다 — detection.conf_threshold(0.1)의 허위 박스가 차선을 지우지 않게
+    pad_ratio: 0.05            # 박스 좌우를 폭의 이 비율만큼 넓혀 지운다 (차체 모서리·그림자)
+    occluded_window_ratio: 0.5 # 윈도 면적의 이 비율 이상이 차량이면 '가려진 윈도'
   max_lane_index: 1            # 자차 차로 기준 좌우 몇 차로까지 offset을 잴지. 그 밖은 차선 외삽을 믿을 수 없어 제외
   perspective:
     # bird's eye view 변환용 사다리꼴 네 꼭짓점 (프레임 비율 좌표, [x, y]) — 좌상 → 우상 → 우하 → 좌하.
