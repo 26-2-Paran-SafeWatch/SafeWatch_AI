@@ -1,8 +1,8 @@
 # 파이프라인 구조 설계서
 
-**버전** 0.18 (차선 인식 차량 영역 제외)
+**버전** 0.20 (딥러닝 차선 실행 경로 추가)
 **작성** 설만수
-**최종 수정** 2026-11-02
+**최종 수정** 2026-11-07
 
 이 문서는 SafeWatch AI 모듈의 내부 구조와 모듈 간 데이터 흐름을 정의한다. 구현 진행에 따라 갱신한다.
 
@@ -172,6 +172,10 @@ class VehicleBox:
 
 ### 3.3 LANE — 차선 인식
 
+> **딥러닝 전환 결정 (v0.19, 2026-11-06)** — 아래는 현재 구현된 OpenCV 방식이다. UFLDv2로의 전환 결정과 합격 기준은 [`lane-detection-dl-plan.md`](lane-detection-dl-plan.md). 합격 전까지는 이 방식이 기본 경로다.
+>
+> **v0.20 (2026-11-07) — UFLD 실행 경로 추가.** `lane.method: ufld`로 바꾸면 `src/lane/ufld_detector.py`가 쓰인다(기본은 여전히 `opencv`). 출력은 같은 `LaneModel`이되 `space="image"`(원본 화면 점)이고, 안전장치(존재 비율·형상·걸침·차로 폭·선택적 일관성, `src/lane/ufld_guard.py`)를 통과해야 `valid`다. 구조·근거·남은 일은 `lane-detection-dl-plan.md` 3장·5장.
+
 **책임** 좌우 차선의 위치와 곡률을 산출하고, 결과의 신뢰도를 함께 제공한다.
 
 **입력** `Frame`
@@ -290,6 +294,8 @@ class TrackedVehicle:
 ### 3.5 METRICS — 지표 산출
 
 **책임** 차량과 차선의 관계를 수치화하고 시계열로 축적한다.
+
+> **v0.20** — `LaneModel.space`가 `"image"`(ufld 경로)면 조감도 변환 없이 차량 바닥 행에서 좌우 차선 x를 읽어 offset을 낸다(`OffsetCalculator._measure_image`). 기울기 없는 카메라에서 화면의 한 행은 같은 거리의 노면이라 그 행 안의 가로 비율이 보존되므로 같은 offset이 나온다. 차량 바닥이 `LaneModel.measure_y_range` 밖이면 재지 않는다. 연속 횡위치·차로 배정·평활화 등 이후 처리는 두 경로가 같다.
 
 **입력** `TrackedVehicle[]`, `LaneModel`, `IMUData`
 **출력**
@@ -511,7 +517,7 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 |---|---|---|
 | 추론 엔진 | ONNX vs NCNN, 양자화 적용 여부. **ONNX·NCNN export 경로 둘 다 구현·개발 PC 검증 완료 (2026-10-01, `scripts/export_model.py`)** — 둘 중 하나를 택하는 결정 자체는 여전히 Pi5 실측 전까지 미정. 참고로 개발 PC(Apple Silicon)에서 동일 영상·320 해상도로 한 번씩 돌려본 결과는 PyTorch 85ms → ONNX 77ms → NCNN 47ms(모두 detection 단계 평균)였으나, 워밍업·반복측정 없는 1회성 수치라 **Pi5 성능을 전혀 대변하지 않는다**(CPU 아키텍처·코어·캐시가 다름) — S6에서 `scripts/benchmark.py` 완성 후 제대로 재측정 | S6 (11~12주차) Pi5 실측 후 |
 | 비식별화 위치 | Edge vs 서버 | Pi5 성능 여유 확인 후 |
-| 차선 인식 방식 | OpenCV 유지 vs 딥러닝 전환. **v0.5에서 우선순위 상승** — 차선 인식이 판정 전체의 단일 의존 경로가 되었고 IMU 폴백이 없어짐. S2에서 보도블록 오탐 확인. **v0.15 — OpenCV 유지 쪽 근거 확보**: AI Hub 정답 라벨 검증에서 평행 제약 방식이 `min_confidence` 0.5 통과분 오답 0(원본·320px, 3.3). **남은 문제는 가용률**(통과 14~15%) — 신뢰도 항목별 분해 진단 후 판단 | 가용률 진단 후 |
+| 차선 인식 방식 | **v0.19 — 딥러닝(UFLDv2) 전환 결정 (2026-11-06)**: 결정·합격 기준·진행 단계는 [`lane-detection-dl-plan.md`](lane-detection-dl-plan.md). 합격 전까지 이 장의 OpenCV 방식이 기본 경로다. 이하 이전 기록: OpenCV 유지 vs 딥러닝 전환. **v0.5에서 우선순위 상승** — 차선 인식이 판정 전체의 단일 의존 경로가 되었고 IMU 폴백이 없어짐. S2에서 보도블록 오탐 확인. **v0.15 — OpenCV 유지 쪽 근거 확보**: AI Hub 정답 라벨 검증에서 평행 제약 방식이 `min_confidence` 0.5 통과분 오답 0(원본·320px, 3.3). **남은 문제는 가용률**(통과 14~15%) — 신뢰도 항목별 분해 진단 후 판단 | 가용률 진단 후 |
 | 링 버퍼 저장 방식 | ~~무압축 vs 실시간 압축~~ → **해결 (v0.5)**: 5초 세그먼트×12개 순환(총 60초), 구현·크기 결정 모두 HW 파트 담당으로 확정. 압축 여부도 HW 파트 결정 사항 | — |
 | AI 가속기 도입 | Hailo AI Kit 등 | S6 초반 성능 판단 후 |
 | ~~IMU 지표의 track_id 귀속 규칙~~ | **해소 (v0.5)** — 스코프 변경으로 IMU 지표가 판정에서 빠져 귀속 문제 자체가 사라짐 (`risk-criteria.md` 2.5, C안 채택과 동일) | — |
@@ -533,6 +539,8 @@ HW 파트 전체 아키텍처(`docs/system-architecture.md`)에 따르면 이 �
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| 0.20 | 2026-11-07 | **UFLD 실행 경로 추가** (3.3, 3.5) — `lane.method: opencv \| ufld`, `src/lane/ufld*.py`(ONNX 추론·출력 해석·안전장치), 원본 화면 offset, `scripts/export_ufld_onnx.py`. 기본 경로는 그대로 opencv. 상세는 `lane-detection-dl-plan.md` v0.2 |
+| 0.19 | 2026-11-06 | **차선 인식 딥러닝 전환 결정** (5장) — UFLDv2 1순위, offset 원본 화면 기준 전환, OpenCV 방식은 설정으로 유지. 상세·합격 기준은 `lane-detection-dl-plan.md`. 3.3 구현은 아직 OpenCV |
 | 0.18 | 2026-11-05 | **차선 인식 차량 영역 제외 + `min_confidence` 0.5 → 0.47** (3.3) — 검출 박스를 조감도로 옮겨 차선 후보에서 지우고 가려진 윈도는 적중률 분모에서 제외(`lane.vehicle_exclusion`). 노트북 12·14번 셀 검증 247장에서 오답 0 유지, 320px 가용률 14% → 17~19%. 시간 누적은 1초 간격 사진이라 판단 불가로 보류 |
 | 0.17 | 2026-11-02 | **하늘 크롭 제거** (3.2) — `detection.roi_top_ratio` 0.45 → 0. 놓친 근거리 차량의 73%가 크롭선에 잘린 차량이었고, 크롭을 없애면 근거리 Recall 0.724 → 0.881, 오탐 99 → 56. 고정 입력 ONNX·NCNN에서는 크롭이 연산도 줄이지 않았다 |
 | 0.16 | 2026-11-02 | **검출·추적 2단계 신뢰도 기준** (3.4) — 검출 0.5 컷이 ByteTrack 2차 매칭을 막던 문제 해결. `detection.conf_threshold` 0.5→0.1, `tracking.track_high_thresh`·`new_track_thresh` 0.25→0.5(새 트랙 생성 품질은 이전과 동일) |

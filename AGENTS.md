@@ -20,11 +20,13 @@
 
 ### 1. 성능 예산을 항상 의식한다
 
-타깃 하드웨어는 **NPU가 없는 라즈베리파이5**다. PC에서 잘 도는 코드가 Pi5에서는 4~5배 느려진다.
+타깃 하드웨어는 **라즈베리파이5**다. PC에서 잘 도는 코드가 Pi5에서는 4~5배 느려진다.
+
+> **NPU 도입 결정 (2026-11-06)** — NPU(기종 미정, Hailo 계열 검토 중)를 달기로 하면서 차선 인식을 딥러닝으로 전환하기로 했다. 결정과 채택 조건은 `docs/lane-detection-dl-plan.md`에 있다. NPU에 올라가지 않는 연산(CPU 후처리 등)은 아래 예산을 그대로 따른다.
 
 - 프레임당 전체 처리 시간 목표: **100ms 이하 (10fps)**
 - 무거운 연산을 추가할 때는 반드시 처리 시간 측정 코드를 함께 넣는다
-- 딥러닝 모델을 하나 더 추가하는 제안은 하지 않는다 (YOLO 외 추가 모델 = 실시간성 상실)
+- 딥러닝 모델을 하나 더 추가하는 제안은 하지 않는다 (YOLO 외 추가 모델 = 실시간성 상실). **예외 — 차선 인식 모델 하나**(`docs/lane-detection-dl-plan.md`, NPU 실행 전제)
 
 ### 2. 설정값을 하드코딩하지 않는다
 
@@ -62,7 +64,7 @@ if offset_ratio > cfg.risk.lane_departure.offset_ratio_threshold:
 |---|---|---|
 | 언어 | Python 3.11 | |
 | 객체 검출 | YOLOv8n (Ultralytics) | **n 이상 크기 모델 사용 금지** |
-| 차선 인식 | OpenCV | 딥러닝 모델 사용 안 함 (성능 제약) |
+| 차선 인식 | OpenCV → **딥러닝(UFLDv2) 전환 중** | 2026-11-06 결정. 합격 기준 통과 전까지는 OpenCV가 기본 경로. `docs/lane-detection-dl-plan.md` |
 | 객체 추적 | ByteTrack | Ultralytics 내장 |
 | 위험 판단 | Rule-based | ML 모델 아님. 설명 가능성이 요구사항 |
 | 추론 엔진 | ONNX Runtime / NCNN | 실측 후 결정 |
@@ -71,7 +73,7 @@ if offset_ratio > cfg.risk.lane_departure.offset_ratio_threshold:
 | 테스트 | pytest | |
 
 **사용하지 않는 것**
-- 딥러닝 기반 차선 인식 모델 (UFLD, LaneNet 등) — 성능 제약. 단, OpenCV 방식이 최종 실패할 경우 재검토 대상
+- ~~딥러닝 기반 차선 인식 모델 (UFLD, LaneNet 등)~~ — **2026-11-06 재검토 결과 전환 결정** (OpenCV 방식 가용률 17~19%, 카메라마다 보정 필요, NPU 도입으로 성능 제약 해소). `docs/lane-detection-dl-plan.md`
 - YOLOv8s 이상 — Pi5에서 3~5fps로 실시간 불가
 - 상시 구동 OCR — 이벤트 시점 단발 실행만 허용
 
@@ -207,7 +209,7 @@ PC와 Pi5는 환경이 다르다. 코드는 양쪽에서 모두 동작해야 한
 
 - 이벤트 JSON 스키마 임의 변경
 - 판단 기준 임계값 근거 없이 조정
-- 딥러닝 모델 추가 제안
+- 딥러닝 모델 추가 제안 (차선 인식 모델은 `docs/lane-detection-dl-plan.md`로 결정된 예외)
 - `data/` 커밋
 - 비식별화 우회
 - 성능 측정 없이 무거운 연산 추가
