@@ -25,7 +25,7 @@ import numpy as np
 
 from src.detection.detector import VehicleDetector
 from src.detection.types import VehicleBox
-from src.lane.lane_detector import LaneDetector
+from src.lane import create_lane_detector
 from src.lane.types import LaneModel
 from src.utils.config import load_config
 
@@ -52,8 +52,12 @@ def draw_vehicle_boxes(image: np.ndarray, boxes: list[VehicleBox]) -> None:
         )
 
 
-def draw_lane(image: np.ndarray, lane: LaneModel, lane_detector: LaneDetector) -> None:
-    """LaneModel의 bird's-eye-view 다항식 곡선을 원본 프레임에 역변환해 그린다."""
+def draw_lane(image: np.ndarray, lane: LaneModel, lane_detector) -> None:
+    """차선을 원본 프레임에 그린다. opencv 경로는 조감도 다항식을 역변환하고,
+    ufld 경로(space="image")는 원본 화면 점과 측정 구간을 그대로 그린다."""
+    if lane.space == "image":
+        _draw_lane_image(image, lane)
+        return
     if lane.left_fit is None or lane.right_fit is None:
         return
 
@@ -82,12 +86,24 @@ def draw_lane(image: np.ndarray, lane: LaneModel, lane_detector: LaneDetector) -
         cv2.putText(image, residual, (20, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
+def _draw_lane_image(image: np.ndarray, lane: LaneModel) -> None:
+    color = (0, 255, 255) if lane.valid else (0, 0, 255)
+    for points in (lane.left_points, lane.right_points):
+        if points is not None and len(points) >= 2:
+            cv2.polylines(image, [points.astype(np.int32).reshape(-1, 1, 2)], False, color, 4)
+    if lane.measure_y_range is not None:
+        for y in lane.measure_y_range:      # offset을 재는 구간 (lane.ufld.measure_range_ratio)
+            cv2.line(image, (0, int(y)), (image.shape[1], int(y)), (255, 200, 0), 1)
+    status = f"lane valid={lane.valid} conf={lane.confidence:.2f} reason={lane.reject_reason}"
+    cv2.putText(image, status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+
 def process_frame(
-    image: np.ndarray, detector: VehicleDetector, lane_detector: LaneDetector
+    image: np.ndarray, detector: VehicleDetector, lane_detector, timestamp: float | None = None
 ) -> np.ndarray:
     annotated = image.copy()
     boxes = detector.detect(image)
-    lane = lane_detector.detect(image)
+    lane = lane_detector.detect(image, vehicle_boxes=boxes, timestamp=timestamp)
     draw_vehicle_boxes(annotated, boxes)
     draw_lane(annotated, lane, lane_detector)
     return annotated
@@ -97,7 +113,7 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     detector = VehicleDetector(cfg)
-    lane_detector = LaneDetector(cfg)
+    lane_detector = create_lane_detector(cfg)   # lane.method: opencv | ufld
 
     source_path = Path(args.source)
     output_path = Path(args.output)
@@ -128,7 +144,7 @@ def main() -> None:
         ok, frame = cap.read()
         if not ok:
             break
-        writer.write(process_frame(frame, detector, lane_detector))
+        writer.write(process_frame(frame, detector, lane_detector, timestamp=frame_count / fps))
         frame_count += 1
 
     cap.release()

@@ -36,7 +36,7 @@ from src.event.clip import NullClipProvider
 from src.event.queue import EventQueue
 from src.input.sensors import create_sensor_source
 from src.input.source import create_source
-from src.lane.lane_detector import LaneDetector
+from src.lane import create_lane_detector
 from src.metrics.offset import OffsetCalculator
 from src.risk.frame_quality import FrameQualityChecker
 from src.risk.scorer import RiskScorer
@@ -68,10 +68,10 @@ def run(config_path: str, source: str) -> None:
 
     detector = VehicleDetector(cfg)
     detection_interval = cfg.detection.interval
-    lane_detector = LaneDetector(cfg)
+    lane_detector = create_lane_detector(cfg)   # lane.method: opencv | ufld
     tracker = VehicleTracker(cfg)
-    # METRICS는 차선 모델과 같은 BEV 좌표계에서 차량 위치를 봐야 하므로
-    # LANE이 쓰는 perspective 변환기를 공유한다.
+    # opencv 경로 — METRICS는 차선 모델과 같은 BEV 좌표계에서 차량 위치를 봐야 하므로
+    # LANE이 쓰는 perspective 변환기를 공유한다. ufld 경로는 원본 화면 기준이라 None이다.
     offset_calculator = OffsetCalculator(cfg, lane_detector.perspective)
     risk_scorer = RiskScorer(cfg)
     frame_quality_checker = FrameQualityChecker(cfg)
@@ -101,12 +101,14 @@ def run(config_path: str, source: str) -> None:
             frame_quality_ok = frame_quality_checker.check(frame.image)
 
             # LANE을 먼저 돌려야 perspective 행렬이 만들어져 METRICS가 좌표를
-            # 변환할 수 있다.
-            lane = lane_detector.detect(frame.image, vehicle_boxes=last_boxes)
+            # 변환할 수 있다 (opencv 경로).
+            lane = lane_detector.detect(
+                frame.image, vehicle_boxes=last_boxes, timestamp=frame.timestamp
+            )
             if not lane.valid and frame.frame_id % 30 == 0:
                 logger.debug(
-                    "frame_id=%d 차선 신뢰도 미달(%.2f, 잔차 %s) — offset 지표 제외",
-                    frame.frame_id, lane.confidence, lane.fit_residual_ratio,
+                    "frame_id=%d 차선 보류(신뢰도 %.2f, 잔차 %s, 이유 %s) — offset 지표 제외",
+                    frame.frame_id, lane.confidence, lane.fit_residual_ratio, lane.reject_reason,
                 )
 
             series = offset_calculator.update(tracks, lane, frame.timestamp)

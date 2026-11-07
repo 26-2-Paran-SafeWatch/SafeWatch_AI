@@ -56,6 +56,41 @@ lane:
     pad_ratio: 0.05            # 박스 좌우를 폭의 이 비율만큼 넓혀 지운다 (차체 모서리·그림자)
     occluded_window_ratio: 0.5 # 윈도 면적의 이 비율 이상이 차량이면 '가려진 윈도'
   max_lane_index: 1            # 자차 차로 기준 좌우 몇 차로까지 offset을 잴지. 그 밖은 차선 외삽을 믿을 수 없어 제외
+  # 차선 인식 방식 — opencv(조감도, 아래 perspective~confidence) | ufld(딥러닝, 원본 화면, 아래 ufld).
+  # 합격 기준(docs/lane-detection-dl-plan.md 2장)을 통과하기 전까지 기본은 opencv (AGENTS.md 기술 스택)
+  method: opencv
+  ufld:
+    # UFLDv2 ResNet18 CULane 가중치 (원 저장소 configs/culane_res18.py) → scripts/export_ufld_onnx.py로 변환.
+    # 아래 형상 값은 가중치와 반드시 같아야 한다 — 다르면 시작할 때 에러. 튜닝 대상이 아님
+    model_path: data/models/ufld_culane_res18.onnx
+    num_threads: 4             # ONNX Runtime CPU 스레드 (0 = 기본값). NPU 백엔드가 생기면 무시됨
+    input_size: [1600, 320]    # [width, height]
+    crop_ratio: 0.6            # 화면을 높이 input_h/crop_ratio로 늘린 뒤 아래 input_h만 넣는다
+    grid_num: 200              # 행마다 가로 격자 칸 수
+    num_row: 72                # 행 앵커 수
+    row_anchor_range: [0.42, 1.0]   # 행 앵커 세로 위치 (화면 높이 비율)
+    num_lanes: 4
+    ego_lane_ids: [1, 2]       # 자차 차로 좌·우 차선 번호 (왼쪽부터 0)
+    # offset을 재는 세로 구간 [위, 아래] (화면 높이 비율). 차량 바닥이 이 밖이면 재지 않는다.
+    # 위 0.68 — 노트북 v2 21·22번 셀에서 검증 오답 0을 지킨 유일한 범위. ⚠️ 앞차 바닥의 약 14%만
+    # 이 구간 안에 들어온다(19번 셀) — 측정 범위는 팀 결정 대기 [TBD]. 아래 0.98은 정답 라벨 구간 아래 끝
+    measure_range_ratio: [0.68, 0.98]
+    guard:
+      # 안전장치 (src/lane/ufld_guard.py). 근거는 노트북 safewatch_lane_calib_v2.ipynb 19~22번 셀
+      # (AI Hub 검증 시퀀스에서만 고르고, 장착이 다른 카메라는 판정에만 씀). 전부 잠정값 [TBD — 실차 영상 재검증]
+      min_existence: 0.68      # 측정 구간 안 존재 비율 하한 = confidence 하한. 21번 셀 범위 0.68 검증 91%·오답 0
+      min_straddle_margin: 0.0 # 화면 가운데가 예측 차로 안에 있어야 함 (0 = 차로 밖이면 보류). 기하 조건이라 튜닝값 아님
+      width:
+        enabled: true
+        tolerance: 0.25        # 최근 폭 중앙값의 1.25배 초과·1/1.25배 미만이면 보류. 22번 셀 — 국내 차로 폭 차이 ±10~20%, 한 칸 건너뛴 오류는 약 +100%
+        window_sec: 10.0       # 기준 폭(중앙값)을 낼 최근 기록 길이 [TBD — 연속 영상으로 확인]
+        min_samples: 15        # 기록이 이만큼 쌓이기 전에는 보류(보정 중). 15fps에서 약 1초 [TBD]
+      temporal:
+        # 직전 통과 프레임 대비 급변 보류. 띄엄띄엄 뽑은 사진으로는 검증할 수 없어 연속 영상 검증 전까지 끔
+        enabled: false
+        max_center_jump: 0.15  # 차로 중심 이동 / 차로 폭 [TBD]
+        max_width_jump: 0.25   # 폭 변화 비율 [TBD]
+        max_gap_sec: 0.5       # 직전 통과가 이보다 오래되면 비교하지 않음 [TBD]
   perspective:
     # bird's eye view 변환용 사다리꼴 네 꼭짓점 (프레임 비율 좌표, [x, y]) — 좌상 → 우상 → 우하 → 좌하.
     # AI Hub 016.도로주행영상 60_전방 정답 라벨에서 보정한 값 (채택 211장, 구간 0.98~0.56).

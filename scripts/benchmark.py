@@ -37,7 +37,7 @@ from pathlib import Path
 
 from src.detection.detector import VehicleDetector
 from src.input.source import create_source
-from src.lane.lane_detector import LaneDetector
+from src.lane import create_lane_detector
 from src.metrics.offset import OffsetCalculator
 from src.risk.frame_quality import FrameQualityChecker
 from src.risk.scorer import RiskScorer
@@ -113,7 +113,7 @@ def run_benchmark(
 
     detector = VehicleDetector(cfg)
     detection_interval = cfg.detection.interval
-    lane_detector = LaneDetector(cfg)
+    lane_detector = create_lane_detector(cfg)   # lane.method: opencv | ufld
     tracker = VehicleTracker(cfg)
     offset_calculator = OffsetCalculator(cfg, lane_detector.perspective)
     risk_scorer = RiskScorer(cfg)
@@ -137,7 +137,7 @@ def run_benchmark(
             else:
                 tracks = tracker.interpolate()
 
-            lane = lane_detector.detect(frame.image)
+            lane = lane_detector.detect(frame.image, timestamp=frame.timestamp)
             frame_quality_ok = frame_quality_checker.check(frame.image)
             series = offset_calculator.update(tracks, lane, frame.timestamp)
 

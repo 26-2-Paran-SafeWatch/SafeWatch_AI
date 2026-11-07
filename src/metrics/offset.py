@@ -4,8 +4,14 @@
 스웨빙·표류)가 **모두 이 offset 시계열에서 파생**되므로, 이 모듈의 출력이
 곧 판정의 입력 전부다 (risk-criteria.md 1.4).
 
-좌표계 주의 — 차선 모델(`LaneModel`)은 bird's-eye-view 좌표계에 있고 검출·
-추적 박스는 원본 프레임 좌표계에 있다. 차량 위치를 BEV로 옮긴 뒤 비교한다.
+좌표계 주의 — 차선 모델(`LaneModel.space`)에 따라 재는 방식이 다르다.
+- "bev"(opencv 경로): 차선은 bird's-eye-view 다항식, 검출·추적 박스는 원본 프레임
+  좌표계다. 차량 위치를 BEV로 옮긴 뒤 비교한다.
+- "image"(ufld 경로, docs/lane-detection-dl-plan.md D3): 차선도 원본 화면 점이다.
+  차량 바닥 높이 행에서 좌우 차선 x를 읽어 바로 비교한다. 평평한 도로를 정면으로 보는
+  카메라(기울기 없음)에서 화면의 한 행은 카메라에서 같은 거리의 노면이라, 그 행 안에서는
+  가로 거리 비율이 보존된다 — 그래서 조감도 변환 없이 같은 offset이 나온다.
+  측정은 `LaneModel.measure_y_range` 안에서만 한다(그 밖은 차선을 믿을 범위가 아님).
 
 차로 배정 — offset은 자차 차로가 아니라 **그 차량이 달리는 차로** 기준이다
 (risk-criteria.md 2.1). 자차 차로 기준으로만 재면 옆 차로를 정상 주행하는
@@ -26,6 +32,7 @@ from collections import deque
 
 import numpy as np
 
+from src.lane.geometry import lane_at_row
 from src.lane.perspective import PerspectiveTransformer
 from src.lane.types import LaneModel
 from src.metrics.types import OffsetSample, VehicleTimeSeries
@@ -39,7 +46,8 @@ logger = logging.getLogger("safewatch.metrics")
 class OffsetCalculator:
     """차량별 lane offset 시계열을 유지한다."""
 
-    def __init__(self, cfg: Config, perspective: PerspectiveTransformer):
+    def __init__(self, cfg: Config, perspective: PerspectiveTransformer | None):
+        """perspective는 opencv(조감도) 경로에서만 쓴다. ufld 경로는 None을 넘긴다."""
         self._perspective = perspective
         self._lane_width_m: float = cfg.lane.lane_width_m
         self._max_lane_index: int = cfg.lane.max_lane_index
@@ -75,11 +83,12 @@ class OffsetCalculator:
         with profiler.stage("metrics"):
             self._forget_disappeared({t.track_id for t in tracks})
 
-            if not lane.valid or lane.left_fit is None or lane.right_fit is None:
+            if not lane.valid:
                 return self._series
 
+            measure = self._measure_image if lane.space == "image" else self._measure
             for track in tracks:
-                ratio = self._measure(track, lane)
+                ratio = measure(track, lane)
                 if ratio is None:
                     continue
                 self._append(track, ratio, lane.confidence, timestamp)
@@ -92,6 +101,8 @@ class OffsetCalculator:
         옆 차로 차량은 ±1 근처가 나온다. `lane.max_lane_index`보다 먼 차로는
         차선 다항식 외삽을 믿을 수 없어 버린다.
         """
+        if lane.left_fit is None or lane.right_fit is None or self._perspective is None:
+            return None
         try:
             bev = self._perspective.warp_points(
                 np.array([[track.center_x, track.bottom_y]], dtype=np.float32)
@@ -120,6 +131,27 @@ class OffsetCalculator:
 
         lane_center_x = (left_x + right_x) / 2
         ratio = (x_bev - lane_center_x) / lane_width_px  # 우측 양수
+        if abs(round(ratio)) > self._max_lane_index:
+            return None
+        return ratio
+
+    def _measure_image(self, track: TrackedVehicle, lane: LaneModel) -> float | None:
+        """원본 화면(ufld 경로) 기준 위치 — 차량 바닥 행에서 자차 차로 중심 대비, 차로 폭 단위(우측 양수).
+
+        `_measure`와 같은 규약(옆 차로 ±1, max_lane_index 밖 제외)을 따른다.
+        """
+        if lane.measure_y_range is None:
+            return None
+        y = track.bottom_y
+        y_top, y_bottom = lane.measure_y_range
+        if not (y_top <= y <= y_bottom):
+            # 측정 구간 밖 — 그 거리의 차선 위치를 믿을 근거가 없다 (조감도 경로의 '보정 구간 밖'과 같음)
+            return None
+        row = lane_at_row(lane.left_points, lane.right_points, y)
+        if row is None:
+            return None
+        left_x, right_x = row
+        ratio = (track.center_x - (left_x + right_x) / 2) / (right_x - left_x)
         if abs(round(ratio)) > self._max_lane_index:
             return None
         return ratio

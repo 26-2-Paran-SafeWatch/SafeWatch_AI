@@ -95,11 +95,17 @@ class LaneDetector:
         """시각화 등에서 bird's-eye-view ↔ 원본 좌표 변환이 필요할 때 사용."""
         return self._perspective
 
-    def detect(self, image: np.ndarray, vehicle_boxes: list[VehicleBox] | None = None) -> LaneModel:
+    def detect(
+        self,
+        image: np.ndarray,
+        vehicle_boxes: list[VehicleBox] | None = None,
+        timestamp: float | None = None,
+    ) -> LaneModel:
         """원본 프레임을 bird's eye view로 변환한 뒤 차선을 인식한다.
 
         `vehicle_boxes`(원본 프레임 좌표)를 주면 그 영역을 차선 후보에서 뺀다
-        (`lane.vehicle_exclusion.enabled`가 꺼져 있으면 무시).
+        (`lane.vehicle_exclusion.enabled`가 꺼져 있으면 무시). `timestamp`는 ufld 경로와
+        호출 모양을 맞추기 위한 인자로, 이 경로는 프레임마다 독립이라 쓰지 않는다.
         """
         with profiler.stage("lane"):
             warped = self._perspective.warp(image)
