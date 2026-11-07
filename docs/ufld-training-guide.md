@@ -1,0 +1,94 @@
+# UFLDv2 차선 모델 학습 가이드 (GPU 데스크탑)
+
+`docs/lane-detection-dl-plan.md` 5장 **2단계 파인튜닝**을 AI Hub Training 데이터 전체로 다시 하는 절차.
+데스크탑 환경(WSL2·CUDA PyTorch·저장소 클론·API 키 파일)은 [`gpu-desktop-setup.md`](gpu-desktop-setup.md) 1~5장을 먼저 끝낸다.
+모든 명령은 **WSL Ubuntu 터미널, 저장소 루트, `.venv` 활성화 상태**에서 실행한다.
+학습 코드는 아직 `feature/lane-ufld` 브랜치에만 있다 — `git fetch && git checkout feature/lane-ufld`.
+
+## 0. 왜 다시 하나 (2026-11-07)
+
+- 노트북 18·19번 파인튜닝은 약 717장(Validation 데이터 일부)으로 해서 효과가 없었다 — 데이터가 너무 적었다.
+- 사전학습 그대로는 노란 중앙선·점선을 건너뛰고 한 칸 바깥 선을 잡는 오류가 남는다. 규칙(폭 검사 등)으로 막는 건
+  임시방편이고, 근본 대책은 한국 도로로 학습하는 것이다.
+- Training 데이터 60_전방에서 정답 v3가 나오는 프레임이 **22,745장(466개 시퀀스)** — 이전의 32배.
+
+## 1. 받을 파일 (데이터셋 180 도로주행영상)
+
+| filekey | 내용 | 크기 |
+|---|---|---|
+| 38568 | Training 라벨 sl 도심로 | 102MB |
+| 38569 | Training 라벨 sl 자동차전용도로 | 115MB |
+| 38576 | Training 원천(이미지) sl 도심로 | 48GB |
+| 38577 | Training 원천(이미지) sl 자동차전용도로 | 39GB |
+| 38578 | Validation 라벨 (학습에서 뺄 시퀀스 목록용) | 61MB |
+
+디스크 여유 **약 100GB** 필요(zip 87GB + 변환 결과 약 5GB). 변환이 끝나면 이미지 zip 두 개는 지워도 된다.
+
+```bash
+mkdir -p data/raw/aihub && cd data/raw/aihub
+bash ../../../scripts/aihubshell_fixed.sh -aihubapikey "$(cat ~/.aihub_api_key)" \
+    -mode d -datasetkey 180 -filekey 38568,38569,38576,38577,38578
+cd ../../..
+```
+
+> 공식 `aihubshell` 말고 반드시 저장소의 `aihubshell_fixed.sh`를 쓴다 (조각 병합 순서 버그 — `gpu-desktop-setup.md` 6장).
+> 키는 채팅·명령 기록에 직접 쓰지 말고 `~/.aihub_api_key` 파일로만 넘긴다.
+
+## 2. 사전학습 가중치
+
+노트북이 쓰던 CULane 가중치를 그대로 쓴다. 구글 드라이브 `SafeWatch/ufld/culane_res18.pth`를 받아
+`data/models/culane_res18.pth`에 둔다 (원 저장소 README의 링크와 같은 파일).
+
+## 3. 학습 데이터 만들기
+
+```bash
+D=data/raw/aihub/016.도로주행영상
+python -m scripts.prepare_ufld_dataset \
+    --label-zips "$D/1.Training/라벨링데이터_0107/sl/도심로.zip" "$D/1.Training/라벨링데이터_0107/sl/자동차전용도로.zip" \
+    --image-zips "$D/1.Training/원천데이터_0107/sl/도심로.zip" "$D/1.Training/원천데이터_0107/sl/자동차전용도로.zip" \
+    --exclude-label-zip "$D/2.Validation/라벨링데이터_0107/라벨링데이터.zip" \
+    --out data/processed/ufld_aihub --workers 8
+```
+
+- **검증(Validation) 시퀀스는 전부 뺀다.** AI Hub 학습·검증 데이터는 같은 시퀀스·같은 프레임을 공유한다
+  (60_전방 검증 시퀀스 98개 중 44개, 똑같은 프레임 1,968장). 노트북 평가가 그 시퀀스들이라 빼지 않으면 점수가 부풀려진다.
+- **20200916 날짜도 뺀다** (`configs/ufld_train.yaml` data.exclude_dates). 노트북의 '틀어짐'(처음 보는 카메라) 시험용이다.
+- 정답 규칙은 노트북 정답 v3와 같다(`scripts/ufld_labels.py`, 검증 라벨 2,766장으로 노트북 함수와 전부 일치 확인).
+- 끝나면 `data/processed/ufld_aihub/manifest.json`에 장수·제외 이유가 남는다. 예상: 정답 있는 프레임 약 22,700장,
+  그중 10% 시퀀스가 에폭 선택용.
+- 중간에 끊기면 같은 명령을 다시 실행하면 된다 (만든 이미지는 건너뜀).
+
+## 4. 학습
+
+```bash
+python -m scripts.train_ufld --data data/processed/ufld_aihub \
+    --weights data/models/culane_res18.pth --out data/models/ufld_aihub_ft.pth
+```
+
+- 처음에 "학습 전 선택용 손실"(사전학습 그대로)을 찍고, 에폭마다 선택용 손실이 그보다 낮아지면 `--out`에 저장한다.
+- 설정은 `configs/ufld_train.yaml` (20에폭, 배치 32, fp16). GPU 메모리가 부족하면 batch_size를 16으로.
+- 끊기면 같은 명령에 `--resume`.
+- 남는 파일: `ufld_aihub_ft.pth`(최저 손실 에폭), `ufld_aihub_ft_last.pth`(이어 하기용), `ufld_aihub_ft_history.json`(에폭별 손실).
+- 바로 돌려 보기: `--epochs 1 --max-steps 50`으로 몇 분 안에 끝까지 도는지 먼저 확인한다.
+
+## 5. 평가 — 노트북에서
+
+학습 스크립트의 선택용 손실은 에폭을 고르는 데만 쓴다. **합격 판정은 노트북의 검증·틀어짐 평가**(학습에서 뺀 시퀀스, 정답 v3,
+21~23번 셀과 같은 기준)로 한다.
+
+1. `ufld_aihub_ft.pth`를 구글 드라이브 `SafeWatch/ufld/`에 올린다.
+2. 노트북 평가 셀(25번, 결과 나오면 추가)에서 사전학습 모델과 같은 표로 비교한다.
+3. 좋아졌으면 ONNX로 바꿔 실행 경로에 넣는다:
+
+```bash
+python -m scripts.export_ufld_onnx --weights data/models/ufld_aihub_ft.pth \
+    --output data/models/ufld_aihub_ft.onnx --verify
+```
+
+그다음 `configs/default.yaml`(또는 pi5.yaml)의 `lane.ufld.model_path`를 이 파일로 바꾼다.
+
+## 6. 다음 후보 (결과를 보고)
+
+- NPU용 작은 출력부(격자 200→100 등)로 같은 데이터에서 학습 — 마지막 완전연결층이 모델 대부분이라 NPU 메모리 부담이 크다.
+- 정답이 안 나오는 프레임 약 18,000장(자차 쌍 없음/폭 이상)의 원인 분석 — 규칙을 넓히면 학습 데이터가 늘어난다.
+- 우리 카메라 영상으로 추가 파인튜닝 (6단계).
