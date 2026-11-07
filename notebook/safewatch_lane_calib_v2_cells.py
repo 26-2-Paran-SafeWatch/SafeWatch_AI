@@ -3397,3 +3397,209 @@ for tag, (_, _, e, f, res) in bad23[:N_SHOW23]:
 # ── C. 처리 시간 (코랩 CPU) ──
 print('\nC. 처리 시간 평균(ms, 코랩 CPU — Pi5와 다름, 참고용):',
       {k: round(v, 1) for k, v in profiler23.summary().items()})
+
+
+# ============================== 24번 셀 ==============================
+# 24. 차로 폭 기준 오염 진단 — 23번 그림 1(085235_I1000225, 오차 0.68)은 폭이 2배인데 왜 폭 검사를 통과했나
+# 필요: 23번 셀까지 실행 (OUT23·order23·guard23·RES23·CFG23·TOP23·BOT23·gt_rows·err_img 사용). CPU로 충분, 추론 다시 안 함
+#
+# 가설: 저장소 폭 검사는 '지난 프레임'의 폭 중앙값을 기준으로 쓴다(22번 셀은 시퀀스 전체 중앙값).
+#       주행 앞부분부터 모델이 한 칸 바깥 선을 잡으면 그 틀린 폭이 기준이 되어
+#       ① 틀린 프레임은 통과시키고 ② 맞는 프레임은 'width'로 보류한다.
+# 확인할 것
+#   1. 시퀀스별: 건너뜀 프레임(예측 폭 / 정답 폭 > 1.4) 수, 그중 통과 수, 기준이 오염된 프레임 수(기준 폭 / 정답 폭이 허용 밖)
+#   2. 23번 그림에 나온 시퀀스의 프레임별 시간표 + 그래프 — 기준 폭이 언제 어떻게 틀어지나
+#   3. 대책 비교 — 설치 때 카메라별 폭을 한 번 재 둔다고 가정(여기서는 정답 폭 중앙값으로 흉내 → 실제보다 유리함)
+#        코드②   : 지금 저장소 (지난 프레임 중앙값만)
+#        고정     : 고정 폭 ± 허용치만
+#        보정안   : 고정 폭 ± 허용치 안에 든 폭만 기록, 기준 = 그 기록의 중앙값(모자라면 고정 폭) — 오염이 원천 차단됨
+#   4. 고정 폭이 현실적인가 — 날짜(카메라 추정)별 정답 폭의 흩어짐. 허용치 ±25% 안에 대부분 들어야 고정 기준을 쓸 수 있음
+from src.lane.geometry import lane_at_row
+
+SKIP24 = 1.4                                                 # 예측 폭 / 정답 폭이 이보다 크면 '한 칸 건너뜀'으로 본다
+TOL24 = CFG23.lane.ufld.guard.width.tolerance
+LTOL24 = np.log1p(TOL24)
+SHOW_SEQ24 = 3                                               # 시간표·그래프를 볼 시퀀스 수 (23번 그림 오답이 많은 순)
+
+
+def cam24(sq):
+    return '_'.join(sq.split('_')[:2])                       # '2_20200916_085235' → '2_20200916' (날짜 = 카메라로 추정)
+
+
+def widths24(L, R, W, H):
+    """[측정 구간 아래끝 행 폭, 위끝 행 폭] / 화면 폭 — 저장소 LaneGuard와 같은 두 행. 못 재면 None"""
+    out = []
+    for yr in (BOT23, TOP23):
+        lr = lane_at_row(L, R, yr * H)
+        if lr is None:
+            return None
+        out.append((lr[1] - lr[0]) / W)
+    return np.array(out)
+
+
+def gt_pts24(f):
+    gt = gt_rows(f['meta'], f['s'], TOP23)
+    return (gt, None, None) if gt is None else (gt, gt[:, [1, 0]], gt[:, [2, 0]])
+
+
+def ldev24(a, b):
+    return float(np.max(np.abs(np.log(a / b))))
+
+
+# ── 프레임마다: 23번 코드② 순서 그대로 다시 돌리면서, 판정 직전의 기준 폭을 기록 ──
+D24 = {}
+for tag, frames in (('검증', F19_HOLD), ('틀어짐', F19_MIS)):
+    rows = sorted([f for f in frames if gt_rows(f['meta'], f['s'], TOP23) is not None], key=order23)
+    recs, g, cur = [], None, None
+    for f in rows:
+        sq, ix = order23(f)
+        if sq != cur:
+            g, cur = guard23(), sq
+        L, R, W, H = OUT23[str(f['ip'])]
+        ts = ix / 30.0
+        hist = [(b, t) for t0, b, t in g._widths if t0 >= ts - g._width_window_sec]   # check()가 볼 기록과 같음
+        ref = np.median(np.array(hist), 0) if len(hist) >= g._width_min_samples else None
+        res = g.check(L, R, W, H, ts)
+        gt, gl, gr = gt_pts24(f)
+        gw = widths24(gl, gr, W, H)
+        pw = widths24(L, R, W, H)
+        recs.append(dict(f=f, sq=sq, cam=cam24(sq), ix=ix, ts=ts, reason=res.reason, valid=res.valid,
+                         err=err_img(L, R, gt), pw=pw, gw=gw, ref=ref, nhist=len(hist)))
+    for r in recs:
+        r['skip'] = r['pw'] is not None and r['gw'] is not None and bool((r['pw'] / r['gw'] > SKIP24).any())
+        r['bad_ref'] = r['ref'] is not None and r['gw'] is not None and ldev24(r['ref'], r['gw']) > LTOL24
+        r['past_straddle'] = r['reason'] in (None, 'width', 'width_calibrating')   # 폭 검사까지 왔나
+    D24[tag] = recs
+
+# ── 1. 시퀀스별 요약 ──
+print('═' * 112)
+print(f'1. 시퀀스별 — 건너뜀 = 예측 폭/정답 폭 > {SKIP24} · 기준 오염 = 판정 직전 기준 폭이 정답 폭에서 ±{TOL24:.0%} 밖')
+print('═' * 112)
+for tag, recs in D24.items():
+    print(f'\n▶ {tag}')
+    print(f'  {"시퀀스":<22}{"장수":>5}{"건너뜀":>7}{"└통과":>6}{"└보류(width)":>13}{"기준 오염":>9}{"맞는데 width 보류":>17}{"0.10 초과 통과":>15}')
+    tot = Counter()
+    for sq in sorted({r['sq'] for r in recs}):
+        rs = [r for r in recs if r['sq'] == sq]
+        c = Counter(n=len(rs),
+                    skip=sum(r['skip'] for r in rs),
+                    skip_pass=sum(r['skip'] and r['valid'] for r in rs),
+                    skip_held=sum(r['skip'] and r['reason'] == 'width' for r in rs),
+                    bad_ref=sum(r['bad_ref'] for r in rs),
+                    good_held=sum((not r['skip']) and r['reason'] == 'width' for r in rs),
+                    wrong_pass=sum(r['valid'] and r['err'] is not None and r['err'][1] > MAX_ERR for r in rs))
+        tot.update(c)
+        if c['skip'] or c['bad_ref'] or c['good_held'] or c['wrong_pass']:
+            print(f'  {sq:<22}{c["n"]:>5}{c["skip"]:>7}{c["skip_pass"]:>6}{c["skip_held"]:>13}{c["bad_ref"]:>9}'
+                  f'{c["good_held"]:>17}{c["wrong_pass"]:>15}')
+    print(f'  {"합계 (" + str(len({r["sq"] for r in recs})) + "개 시퀀스)":<22}{tot["n"]:>5}{tot["skip"]:>7}{tot["skip_pass"]:>6}'
+          f'{tot["skip_held"]:>13}{tot["bad_ref"]:>9}{tot["good_held"]:>17}{tot["wrong_pass"]:>15}')
+    print('  (문제가 하나도 없는 시퀀스는 줄 생략)')
+
+# ── 2. 문제 시퀀스 시간표 + 그래프 ──
+wp = Counter(r['sq'] for recs in D24.values() for r in recs
+             if r['valid'] and r['err'] is not None and r['err'][1] > MAX_ERR)
+bs = Counter(r['sq'] for recs in D24.values() for r in recs if r['bad_ref'])
+show24 = [sq for sq, _ in (wp + bs).most_common(SHOW_SEQ24)]
+print('\n' + '═' * 112)
+print('2. 프레임별 시간표 — 폭은 화면 폭 대비 [아래끝, 위끝]. 비율 = 예측/정답, 기준/정답 (1.00이 정상)')
+print('═' * 112)
+for sq in show24:
+    rs = [r for recs in D24.values() for r in recs if r['sq'] == sq]
+    print(f'\n▶ {sq}  ({len(rs)}장)')
+    print(f'  {"프레임":>9} {"판정":<18}{"오차":>6}  {"예측/정답":>13}  {"기준/정답":>13}  {"기록":>4}  표시')
+    for r in rs:
+        pr = '' if r['pw'] is None or r['gw'] is None else '{:.2f} {:.2f}'.format(*(r['pw'] / r['gw']))
+        rr = '' if r['ref'] is None or r['gw'] is None else '{:.2f} {:.2f}'.format(*(r['ref'] / r['gw']))
+        er = '' if r['err'] is None else f'{r["err"][1]:.2f}'
+        mark = ' '.join(m for m, ok in (('건너뜀', r['skip']), ('기준오염', r['bad_ref']),
+                                        ('★오답통과', r['valid'] and r['err'] is not None and r['err'][1] > MAX_ERR)) if ok)
+        print(f'  {r["ix"]:>9} {("통과" if r["valid"] else r["reason"]):<18}{er:>6}  {pr:>13}  {rr:>13}  {r["nhist"]:>4}  {mark}')
+
+    t = np.array([r['ts'] - rs[0]['ts'] for r in rs])
+    def col(key, k):
+        return np.array([np.nan if r[key] is None or r['gw'] is None else (r[key] / r['gw'])[k] for r in rs])
+    fig, axs = plt.subplots(1, 2, figsize=(14, 3.6), sharey=True)
+    for k, ax in enumerate(axs):
+        ax.axhspan(1 / (1 + TOL24), 1 + TOL24, color='0.9', label=f'정답 ±{TOL24:.0%}')
+        ax.plot(t, col('pw', k), 'o-', ms=4, label='예측 폭 / 정답 폭')
+        ax.plot(t, col('ref', k), 's--', ms=4, label='판정 기준 폭 / 정답 폭')
+        for r, x in zip(rs, t):
+            if r['valid'] and r['err'] is not None and r['err'][1] > MAX_ERR:
+                ax.axvline(x, color='r', alpha=.4)
+            elif r['reason'] == 'width':
+                ax.axvline(x, color='orange', alpha=.3)
+        ax.set_title(f'{sq} — {["측정 구간 아래끝", "위끝"][k]} 행')
+        ax.set_xlabel('시퀀스 시작부터 초'); ax.set_ylim(0.3, 3.0); ax.set_yscale('log')
+        ax.set_yticks([0.5, 0.8, 1, 1.25, 1.4, 2, 3]); ax.set_yticklabels(['0.5', '0.8', '1', '1.25', '1.4', '2', '3'])
+    axs[0].legend(fontsize=8, loc='upper left')
+    fig.suptitle('빨간 세로줄 = 오답(0.10 초과)인데 통과   주황 = width 보류', fontsize=9)
+    plt.tight_layout(); plt.show()
+
+# ── 3. 대책 비교 ──
+FIX24 = {}
+for recs in D24.values():
+    for cam in {r['cam'] for r in recs}:
+        g_ = np.array([r['gw'] for r in recs if r['cam'] == cam and r['gw'] is not None])
+        FIX24[cam] = np.median(g_, 0) if len(g_) else None
+
+min_n24 = WIDTH23['min_samples']
+win24 = WIDTH23['window_sec']
+for recs in D24.values():
+    hist, cur = [], None
+    for r in recs:
+        if r['sq'] != cur:
+            hist, cur = [], r['sq']
+        fx = FIX24.get(r['cam'])
+        ok_fix = r['past_straddle'] and r['pw'] is not None and fx is not None and ldev24(r['pw'], fx) <= LTOL24
+        r['v_fixed'] = ok_fix
+        hist = [(t0, w) for t0, w in hist if t0 >= r['ts'] - win24]
+        ref = np.median([w for _, w in hist], 0) if len(hist) >= min_n24 else fx
+        r['v_combo'] = ok_fix and ldev24(r['pw'], ref) <= LTOL24
+        if ok_fix:
+            hist.append((r['ts'], r['pw']))
+
+print('\n' + '═' * 112)
+print('3. 대책 비교 — 칸 = 통과율 · 통과 중 0.10 / 0.15 / 0.25 초과 건수 · 건너뜀 통과 · 맞는데 폭 때문에 보류')
+print('   ⚠️ 고정 폭을 정답 폭 중앙값으로 흉내 냈으므로 실제(설치 때 한 번 측정)보다 유리한 숫자. 방향만 볼 것')
+print('═' * 112)
+for tag, recs in D24.items():
+    print(f'\n▶ {tag}')
+    for name, key in (('코드② (지난 프레임)', None), ('고정 폭만', 'v_fixed'), ('보정안 (고정 범위 안만 기록)', 'v_combo')):
+        v = [r['valid'] if key is None else r[key] for r in recs]
+        e = np.array([r['err'][1] for r, ok in zip(recs, v) if ok and r['err'] is not None])
+        held_good = sum((not ok) and r['past_straddle'] and not r['skip'] for r, ok in zip(recs, v))
+        held_good -= 0 if key else sum(r['reason'] == 'width_calibrating' and not r['skip'] for r in recs)
+        print(f'  {name:<26}{sum(v) / len(v) * 100:>4.0f}% ({sum(v)}/{len(v)}) · {(e > MAX_ERR).sum():>2} / {(e > .15).sum():>2} / '
+              f'{(e > .25).sum():>2} · 건너뜀 통과 {sum(ok and r["skip"] for r, ok in zip(recs, v)):>2} · 맞는데 폭 보류 {held_good:>3}')
+print('  (코드②의 "맞는데 폭 보류"는 보정 중 보류를 뺀 width 보류만 셈)')
+
+# ── 4. 고정 폭이 현실적인가 ──
+print('\n' + '═' * 112)
+print(f'4. 날짜(카메라 추정)별 정답 폭 — 중앙값 대비 흩어짐. 고정 기준 ±{TOL24:.0%} 밖에 드는 비율이 작아야 고정 기준이 쓸 만함')
+print('═' * 112)
+print(f'  {"날짜":<14}{"장수":>5}{"시퀀스":>6}  {"아래끝 폭 중앙값":>14}{"위끝":>7}  {"5~95% (중앙값 대비)":>22}  {"±" + f"{TOL24:.0%}" + " 밖":>8}')
+for tag, recs in D24.items():
+    for cam in sorted({r['cam'] for r in recs}):
+        g_ = np.array([r['gw'] for r in recs if r['cam'] == cam and r['gw'] is not None])
+        if len(g_) == 0:
+            continue
+        m = np.median(g_, 0)
+        q = np.percentile(np.log(g_ / m).max(1) * np.sign(np.log(g_ / m).sum(1)), [5, 95])
+        out = np.mean(np.abs(np.log(g_ / m)).max(1) > LTOL24) * 100
+        print(f'  {cam:<14}{len(g_):>5}{len({r["sq"] for r in recs if r["cam"] == cam}):>6}  {m[0]:>14.3f}{m[1]:>7.3f}  '
+              f'{np.expm1(q[0]):>+10.0%} ~ {np.expm1(q[1]):>+6.0%}  {out:>7.1f}%   ({tag})')
+
+# ── 결론 자동 정리 ──
+print('\n' + '═' * 112)
+mis = D24['틀어짐']
+target = [r for r in mis if r['valid'] and r['err'] is not None and r['err'][1] > 0.25 and r['skip']]
+if target:
+    n_bad = sum(r['bad_ref'] for r in target)
+    print(f'가설 판정: 틀어짐에서 "건너뜀인데 통과한 0.25 초과" {len(target)}건 중 기준이 오염된 상태였던 것 {n_bad}건'
+          f' → {"가설 맞음 (지난 프레임 기준이 틀린 폭을 배움)" if n_bad == len(target) else "일부만 설명됨 — 시간표 확인"}')
+else:
+    big = [r for r in mis if r['valid'] and r['err'] is not None and r['err'][1] > 0.25]
+    print(f'가설 판정: 틀어짐에서 통과한 0.25 초과 {len(big)}건 중 폭 비율로 건너뜀(>{SKIP24})인 것이 없음'
+          ' → 폭 기준 오염이 아니라 다른 원인(갈림길 등). 시간표의 예측/정답 비율 확인')
+print('═' * 112)
