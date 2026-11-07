@@ -3070,7 +3070,7 @@ RATE22 = 0.02
 N_SHOW22 = 4
 
 
-def seq_of(f):
+def seq22(f):
     sq, _, _ = f['ip'].stem.rpartition('_')
     return sq or f['ip'].stem
 
@@ -3213,3 +3213,186 @@ if key_f:
         show19(r, cut_f, f'[F-2] 보류된 맞는 프레임 (폭 차이 {np.expm1(min(r["dev22"]["카메라"], 5)) * 100:.0f}%)')
 else:
     print('\n[그림 F] 2단계 · 카메라 기준 · 폭±0.25 조건을 만족하는 범위가 없어 생략')
+
+
+# ============================== 23번 셀 ==============================
+# 23. 저장소 실행 코드 대조 — feature/lane-ufld 브랜치의 src/lane(ufld 경로)이 실제 가중치로 노트북과 같은 결과를 내나
+# 필요: 22번 셀까지 실행 (F19_HOLD·F19_MIS·gt_rows·err_img·feats20·show19·load·UFLD_DIR 사용). CPU로 충분(ONNX Runtime CPU)
+#
+# 저장소 코드는 가짜 출력·무작위 가중치로만 테스트했다. 여기서 실제 CULane 가중치로 세 가지를 확인한다.
+#   A. 출력 해석이 같은가 — 같은 사진에서 저장소 코드(ONNX)와 노트북(PyTorch)의 자차 차선 점을 비교
+#   B. 판정이 같은가 — 측정 구간 0.68~0.98에서
+#        노트북  : 존재 비율 ≥ 0.68만 (21번 셀 엄격 기준 결과와 같은 조건)
+#        코드①  : 저장소 안전장치 중 존재 비율만 켬 → 노트북과 거의 같아야 함 (차이 = 구간 아래끝 0.98 고정 vs 라벨별 아래끝)
+#        코드②  : 저장소 기본 안전장치 전부 (존재·형상·걸침·차로 폭)
+#   C. 처리 시간 — 코랩 CPU 기준 (Pi5와 다름, 참고용)
+# ⚠️ 차로 폭 검사는 '과거 프레임만' 쓴다. 이 데이터는 1초 간격 사진이라 설정(10초 창, 15장 이상)으로는 기록이 거의
+#    안 쌓이므로, 여기서는 창 60초·최소 5장으로 바꿔 돌린다(WIDTH23). 실제 영상(15fps)에서는 기본값이 맞다.
+import os, copy, subprocess, sys, time
+
+REPO23   = Path('/content/SafeWatch_AI')
+BRANCH23 = 'feature/lane-ufld'
+ONNX23   = UFLD_DIR / 'ufld_culane_res18_rows.onnx'   # 드라이브에 저장 — 다음엔 변환 생략
+REEXPORT23 = False
+WIDTH23  = dict(window_sec=60.0, min_samples=5)        # 1초 간격 사진용 (위 ⚠️)
+N_SHOW23 = 4
+
+# ── 저장소 받기 (브랜치 최신으로 맞춤) ──
+if not REPO23.exists():
+    subprocess.run(['git', 'clone', '-q', '-b', BRANCH23,
+                    'https://github.com/26-2-Paran-SafeWatch/SafeWatch_AI.git', str(REPO23)], check=True)
+else:
+    for cmd in (['fetch', '-q', 'origin', BRANCH23], ['checkout', '-q', BRANCH23], ['reset', '-q', '--hard', f'origin/{BRANCH23}']):
+        subprocess.run(['git', '-C', str(REPO23), *cmd], check=True)
+print('저장소:', subprocess.run(['git', '-C', str(REPO23), 'log', '-1', '--oneline'], capture_output=True, text=True).stdout.strip())
+try:
+    import onnxruntime, onnx  # noqa: F401
+except ImportError:
+    subprocess.run([sys.executable, '-m', 'pip', '-q', 'install', 'onnxruntime', 'onnx'], check=True)
+for m in [m for m in sys.modules if m in ('src', 'scripts') or m.startswith(('src.', 'scripts.'))]:
+    del sys.modules[m]                                   # 다시 실행할 때 새 코드를 읽게
+if str(REPO23) not in sys.path:
+    sys.path.insert(0, str(REPO23))
+
+from src.utils.config import Config, load_config
+from src.lane.ufld import UFLDSpec, OnnxUFLDBackend, preprocess, decode_rows
+from src.lane.ufld_guard import LaneGuard
+from src.utils.profiler import profiler as profiler23
+
+CFG23  = load_config(REPO23 / 'configs/default.yaml')
+SPEC23 = UFLDSpec.from_config(CFG23.lane.ufld)
+TOP23, BOT23 = CFG23.lane.ufld.measure_range_ratio
+MIN_EX23 = CFG23.lane.ufld.guard.min_existence
+print(f'설정: 측정 구간 {TOP23}~{BOT23}, 존재 비율 ≥ {MIN_EX23}, 폭 ±{CFG23.lane.ufld.guard.width.tolerance}')
+
+# ── 가중치 → ONNX (저장소 scripts/export_ufld_onnx.py 그대로) ──
+if REEXPORT23 or not ONNX23.exists():
+    from scripts.export_ufld_onnx import UFLDv2RowNet, load_weights, export, verify
+    net23 = UFLDv2RowNet(SPEC23, grid_col=100, num_col=81, fc_norm=True)
+    load_weights(net23, UFLD_DIR / 'culane_res18.pth')
+    net23.keep_rows_only()
+    export(net23, ONNX23)
+    print(f'ONNX 변환 {ONNX23.stat().st_size / 1e6:.0f}MB — PyTorch와 최대 차이 {verify(net23, ONNX23):.2e}')
+    del net23
+BACK23 = OnnxUFLDBackend(ONNX23, num_threads=os.cpu_count() or 0)
+
+
+def guard23(**kw):
+    """저장소 기본 안전장치 설정에서 일부만 바꾼 LaneGuard. kw: existence_only=True / width=dict(...)"""
+    d = copy.deepcopy(CFG23.to_dict()['lane']['ufld']['guard'])
+    d['width'].update(WIDTH23)
+    if kw.get('existence_only'):
+        d['min_straddle_margin'] = -1e9
+        d['width']['enabled'] = False
+        d['temporal']['enabled'] = False
+    return LaneGuard(Config(d), SPEC23.row_anchor, (TOP23, BOT23))
+
+
+def order23(f):
+    st = f['ip'].stem
+    sq, _, ix = st.rpartition('_')
+    dg = ''.join(ch for ch in ix if ch.isdigit())
+    return (sq or st, int(dg) if dg else 0)
+
+
+# ── 프레임마다 한 번 추론 → 해석 결과 캐시 ──
+profiler23.reset()
+OUT23 = {}
+for f in F19_HOLD + F19_MIS:
+    key = str(f['ip'])
+    if key in OUT23:
+        continue
+    bgr = load(f['ip'], None)
+    H, W = bgr.shape[:2]
+    with profiler23.stage('lane'):
+        with profiler23.stage('preprocess'):
+            x = preprocess(bgr, SPEC23)
+        with profiler23.stage('lane_infer'):
+            loc, ex = BACK23.infer(x)
+        with profiler23.stage('decode'):
+            lanes = decode_rows(loc, ex, SPEC23, W, H)
+    OUT23[key] = (lanes[1], lanes[2], W, H)
+
+# ── A. 출력 해석 대조 ──
+print('\n' + '═' * 96)
+print('A. 같은 사진, 저장소 코드(ONNX) vs 노트북(PyTorch) 자차 차선 점')
+print('═' * 96)
+for tag, frames in (('검증', F19_HOLD), ('틀어짐', F19_MIS)):
+    dx, row_mismatch, n = [], 0, 0
+    for f in frames:
+        L, R, W, H = OUT23[str(f['ip'])]
+        nb = f['preds']['UFLD 사전학습']
+        for mine, theirs in ((L, nb[0]), (R, nb[1])):
+            a = {round(y, 2): x for x, y in mine}
+            b = {round(float(y), 2): float(x) for x, y in theirs}
+            row_mismatch += len(set(a) ^ set(b))
+            dx += [abs(a[y] - b[y]) for y in set(a) & set(b)]
+        n += 1
+    dx = np.array(dx) if dx else np.array([0.0])
+    print(f'  {tag:<4} {n}장 — 같은 행 x 차이 중앙값 {np.median(dx):.3f}px · 최대 {dx.max():.2f}px · '
+          f'존재 판정이 갈린 행 {row_mismatch}개 (차선 2개 × 72행 × {n}장 중)')
+print('  기대: x 차이 1px 미만, 갈린 행은 존재 확률이 0.5에 아주 가까운 행 몇 개뿐 (GPU↔CPU 연산 차이)')
+
+# ── B. 판정 대조 ──
+RES23 = {}
+for tag, frames in (('검증', F19_HOLD), ('틀어짐', F19_MIS)):
+    rows = []
+    for f in frames:
+        gt = gt_rows(f['meta'], f['s'], TOP23)
+        if gt is not None:
+            rows.append(f)
+    rows.sort(key=order23)
+    nb_r = feats20(rows, 'UFLD 사전학습', None, TOP23)        # rows와 같은 순서·같은 장수 (정답 있는 프레임만 넣었으므로)
+    assert len(nb_r) == len(rows)
+    out = {'노트북 (존재만)': [], '코드① (존재만)': [], '코드② (기본 전부)': []}
+    g1, g2, cur = None, None, None
+    for f, r_nb in zip(rows, nb_r):
+        sq, ix = order23(f)
+        if sq != cur:                                    # 시퀀스가 바뀌면 기록 초기화 (실제로는 주행 시작)
+            g1, g2, cur = guard23(existence_only=True), guard23(), sq
+        L, R, W, H = OUT23[str(f['ip'])]
+        ts = ix / 30.0
+        gt = gt_rows(f['meta'], f['s'], TOP23)
+        e = err_img(L, R, gt)
+        out['노트북 (존재만)'].append((r_nb['conf'] >= MIN_EX23, None if r_nb['conf'] >= MIN_EX23 else 'existence', r_nb['err'], f, None))
+        for name, g in (('코드① (존재만)', g1), ('코드② (기본 전부)', g2)):
+            res = g.check(L, R, W, H, ts)
+            out[name].append((res.valid, res.reason, e, f, res))
+    RES23[tag] = out
+
+print('\n' + '═' * 110)
+print(f'B. 판정 대조 — 측정 구간 {TOP23}~{BOT23}. 칸 = 통과율 · 통과 중 0.10 초과 / 0.15 초과 / 0.25 초과 건수')
+print('   노트북 21번 셀 같은 조건(사전학습·범위 0.68·존재 0.68): 검증 91%·0건 / 틀어짐 97%·0.10 초과 5.6%(0.15 초과 8건, 0.25 초과 6건)')
+print('═' * 110)
+for tag, out in RES23.items():
+    print(f'\n▶ {tag}')
+    for name, rs in out.items():
+        ok = [r for r in rs if r[0] and r[2] is not None]
+        e = np.array([r[2][1] for r in ok]) if ok else np.array([])
+        reasons = {}
+        for r in rs:
+            if not r[0]:
+                reasons[r[1]] = reasons.get(r[1], 0) + 1
+        rs_txt = ', '.join(f'{k} {v}' for k, v in sorted(reasons.items(), key=lambda t: -t[1]))
+        print(f'  {name:<16} {len(ok) / max(len(rs), 1) * 100:>4.0f}% ({len(ok)}/{len(rs)}) · '
+              f'{(e > MAX_ERR).sum():>2} / {(e > 0.15).sum():>2} / {(e > 0.25).sum():>2}   보류: {rs_txt}')
+        n_cal = reasons.get('width_calibrating', 0)
+        if n_cal:
+            print(f'  {"":<16} 보정 중 {n_cal}장을 빼면 통과율 {len(ok) / max(len(rs) - n_cal, 1) * 100:.0f}% '
+                  f'(시퀀스 {len({order23(r[3])[0] for r in rs})}개)')
+print('\n  · 코드①이 노트북과 몇 장 이내로 같으면 해석·존재 비율 계산이 맞다는 뜻')
+print('  · 코드②의 width_calibrating = 시퀀스 앞부분 기록이 쌓이기 전 보류(1초 간격 사진이라 실제보다 많이 나옴)')
+
+# ── 그림 — 코드② 통과인데 0.10 초과 (최대 N_SHOW23장) ──
+bad23 = [(tag, r) for tag, out in RES23.items() for r in out['코드② (기본 전부)']
+         if r[0] and r[2] is not None and r[2][1] > MAX_ERR]
+bad23.sort(key=lambda t: -t[1][2][1])
+print(f'\n[그림] 코드② 통과 중 0.10 초과 {len(bad23)}건 (최대 {N_SHOW23}건)')
+for tag, (_, _, e, f, res) in bad23[:N_SHOW23]:
+    L, R, _, _ = OUT23[str(f['ip'])]
+    show19(dict(f=f, det=[dict(pts=list(map(tuple, L))), dict(pts=list(map(tuple, R)))], err=e, conf=res.confidence),
+           TOP23, f'[23] 저장소 코드 {tag} 통과 오답')
+
+# ── C. 처리 시간 (코랩 CPU) ──
+print('\nC. 처리 시간 평균(ms, 코랩 CPU — Pi5와 다름, 참고용):',
+      {k: round(v, 1) for k, v in profiler23.summary().items()})
