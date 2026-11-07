@@ -3603,3 +3603,289 @@ else:
     print(f'가설 판정: 틀어짐에서 통과한 0.25 초과 {len(big)}건 중 폭 비율로 건너뜀(>{SKIP24})인 것이 없음'
           ' → 폭 기준 오염이 아니라 다른 원인(갈림길 등). 시간표의 예측/정답 비율 확인')
 print('═' * 112)
+
+
+# ============================== 25번 셀 ==============================
+# 25. 평가 세트 확대 + 모델 비교 — Validation 60_전방 전체(정답 v3 약 2,300장)로 사전학습 vs 재학습
+# 필요: 1번 셀만 (DRIVE_ROOT·VALID_DIR). 2~24번 셀 없이 혼자 돈다. GPU면 빠르고 CPU도 됨(수십 분)
+#
+# 왜: 지금까지 '검증 오답 0'은 257장 기준이었다(4번 셀이 OpenCV 보정용으로 시퀀스 절반을 떼어 놓고, 2번 셀이 2,000장만 뽑음).
+#     오답 0이 나와도 257장이면 '오답률 1.2% 이하'까지만 말할 수 있다(95% 신뢰, 3/N 규칙).
+#     이제 OpenCV 보정이 필요 없으므로 Validation 60_전방 차선 라벨 전부를 평가에 쓴다.
+#   · 검증  = 20200916 이외 날짜 전부 / 틀어짐 = 20200916 (카메라 장착이 다른 차량)
+#   · 재학습 모델(scripts/train_ufld.py)은 Validation 시퀀스를 전부 빼고 학습했으므로 이 평가에 쓸 수 있다.
+#     (18·19번 셀 파인튜닝은 Validation 일부로 학습했으므로 여기서 비교하지 않는다)
+#   · 정답·추론·판정은 저장소 코드 그대로: 정답 v3 = scripts/ufld_labels.py(노트북 19번과 일치 확인),
+#     추론 = src/lane/ufld.py preprocess·decode_rows(23번에서 노트북과 일치 확인), 판정 = LaneGuard
+#   · 오차 = 21번 셀과 같은 정의(측정 구간 행들에서 예측 차로 중심과 정답 중심의 차이 / 정답 차로 폭, 최대값)
+# 모델 파일: 드라이브 SafeWatch/ufld/ 아래. 없는 모델은 건너뛴다.
+import sys, subprocess, zipfile, tarfile, shutil, time, copy, re
+import unicodedata as ud
+from pathlib import Path
+from collections import Counter, defaultdict
+import numpy as np, cv2, torch
+import matplotlib.pyplot as plt
+
+REPO25   = Path('/content/SafeWatch_AI')
+BRANCH25 = 'feature/lane-ufld'
+UFLD25   = DRIVE_ROOT / 'ufld'
+MODELS25 = {'사전학습': UFLD25 / 'culane_res18.pth',
+            '재학습':   UFLD25 / 'ufld_aihub_ft.pth'}
+EVAL25   = Path('/content/lane_eval_v60')              # 세션 로컬
+BACKUP25 = DRIVE_ROOT / 'lane_eval_v60.tar'            # 드라이브 백업 — 다음엔 압축만 푼다
+MIS25    = '20200916'
+CUTS25   = [0.56, 0.60, 0.64, 0.68]                    # 측정 구간 위끝 (팀 결정 대상 — 전부 본다)
+BOT25    = 0.98
+ERR25    = (0.10, 0.15, 0.25)                          # 오답 / 표류 기준 / 큰 오답(걸침 기준)
+RATE25   = 0.02                                        # 2단계 기준: 큰 오답 0 + 0.10 초과 비율 ≤ 2%
+WIDTH25  = dict(window_sec=60.0, min_samples=5)        # 1초 간격 사진용 (23번과 같음)
+BS25     = 8
+N_SHOW25 = 4
+DEV25    = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# ── 저장소 (23번과 같은 방식) ──
+if not REPO25.exists():
+    subprocess.run(['git', 'clone', '-q', '-b', BRANCH25,
+                    'https://github.com/26-2-Paran-SafeWatch/SafeWatch_AI.git', str(REPO25)], check=True)
+else:
+    for cmd in (['fetch', '-q', 'origin', BRANCH25], ['checkout', '-q', BRANCH25], ['reset', '-q', '--hard', f'origin/{BRANCH25}']):
+        subprocess.run(['git', '-C', str(REPO25), *cmd], check=True)
+print('저장소:', subprocess.run(['git', '-C', str(REPO25), 'log', '-1', '--oneline'], capture_output=True, text=True).stdout.strip())
+for m in [m for m in sys.modules if m in ('src', 'scripts') or m.startswith(('src.', 'scripts.'))]:
+    del sys.modules[m]
+if str(REPO25) not in sys.path:
+    sys.path.insert(0, str(REPO25))
+from src.utils.config import Config, load_config
+from src.lane.ufld import UFLDSpec, preprocess, decode_rows
+from src.lane.ufld_guard import LaneGuard
+from scripts.ufld_labels import parse_lanes, ego_lanes, frame_key, sequence_of, x_at
+from scripts.export_ufld_onnx import UFLDv2RowNet, load_weights
+
+CFG25  = load_config(REPO25 / 'configs/default.yaml')
+SPEC25 = UFLDSpec.from_config(CFG25.lane.ufld)
+nfc25  = lambda s: ud.normalize('NFC', s)
+fov25  = lambda c: (m.group(0) if (m := re.search(r'\d+_(전방|측방)', c)) else None)
+is_sl25 = lambda c: c.startswith('sl/') or '/sl/' in c
+
+
+# ── 데이터: Validation zip에서 60_전방 차선(sl) 라벨·사진 전부 ──
+def extract25():
+    lab, img = {}, {}
+    for z in sorted(VALID_DIR.rglob('*.zip')):
+        with zipfile.ZipFile(z) as zf:
+            for o in sorted(zf.namelist(), key=nfc25):
+                c = nfc25(o)
+                if not is_sl25(c) or fov25(c) != '60_전방':
+                    continue
+                if c.lower().endswith('.xml'):
+                    lab[frame_key(c)] = (z, o)                     # 버전 중 이름순 마지막
+                elif c.lower().endswith(('.jpg', '.png')):
+                    img[frame_key(c)] = (z, o)
+    keys = sorted(set(lab) & set(img))
+    print(f'라벨 {len(lab)} · 사진 {len(img)} · 둘 다 있음 {len(keys)}')
+    shutil.rmtree(EVAL25, ignore_errors=True)
+    (EVAL25 / 'xml').mkdir(parents=True); (EVAL25 / 'img').mkdir(parents=True)
+    by_zip = defaultdict(list)
+    for k in keys:
+        by_zip[lab[k][0]].append((lab[k][1], EVAL25 / 'xml' / f'{k}.xml'))
+        by_zip[img[k][0]].append((img[k][1], EVAL25 / 'img' / f'{k}.jpg'))
+    for z, items in by_zip.items():
+        with zipfile.ZipFile(z) as zf:
+            for o, dst in items:
+                dst.write_bytes(zf.read(o))
+        print(f'  {len(items)}개 <- {Path(z).name}')
+
+
+if (EVAL25 / 'xml').exists() and any((EVAL25 / 'xml').iterdir()):
+    print('기존 평가 데이터 사용')
+elif BACKUP25.exists():
+    print('드라이브 백업에서 복원 중...')
+    EVAL25.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(BACKUP25) as t:
+        t.extractall(EVAL25)
+else:
+    extract25()
+    print('드라이브에 백업 저장 중...')
+    with tarfile.open(BACKUP25, 'w') as t:
+        for sub in ('xml', 'img'):
+            t.add(EVAL25 / sub, arcname=sub)
+
+
+def idx25(key):
+    d = ''.join(ch for ch in key.split('_')[-1] if ch.isdigit())
+    return int(d) if d else 0
+
+
+FR25, skip25 = [], Counter()
+for xp in sorted((EVAL25 / 'xml').glob('*.xml')):
+    k = xp.stem
+    try:
+        W, H, lanes = parse_lanes(xp.read_bytes())
+    except Exception:
+        skip25['XML 깨짐'] += 1; continue
+    l4 = ego_lanes(lanes, W, H) if lanes else None
+    if l4 is None:
+        skip25['자차 쌍 없음/폭 이상'] += 1; continue
+    FR25.append(dict(key=k, seq=sequence_of(k), idx=idx25(k), mis=sequence_of(k).startswith(MIS25),
+                     W=W, H=H, l4=l4, ip=EVAL25 / 'img' / f'{k}.jpg'))
+FR25.sort(key=lambda f: (f['seq'], f['idx']))
+for tag, sel in (('검증', False), ('틀어짐', True)):
+    fs = [f for f in FR25 if f['mis'] == sel]
+    print(f'{tag}: {len(fs)}장 · 시퀀스 {len({f["seq"] for f in fs})}개')
+print('정답 없음으로 제외:', dict(skip25))
+
+
+def gt_rows25(f, s, cut, n=12):
+    """19번 gt_rows와 같음 — 정답 자차 좌/우 (y, xl, xr), 원본 사진 좌표. 5행 미만이면 None"""
+    rows = []
+    for y in np.linspace(cut * f['H'], BOT25 * f['H'], n):
+        a, b = x_at(f['l4'][1][3], y), x_at(f['l4'][2][3], y)
+        if a is not None and b is not None:
+            rows.append((y * s, a * s, b * s))
+    return np.array(rows) if len(rows) >= 5 else None
+
+
+def err25(L, R, gt):
+    """15번 err_img와 같음 — (중앙값, 최대값) 또는 None"""
+    e = []
+    for y, gl, gr in gt:
+        a = x_at(L, y) if len(L) >= 2 else None
+        b = x_at(R, y) if len(R) >= 2 else None
+        if a is None or b is None or gr - gl <= 1:
+            continue
+        e.append(abs((a + b) / 2 - (gl + gr) / 2) / (gr - gl))
+    return (float(np.median(e)), float(np.max(e))) if len(e) >= 5 else None
+
+
+# ── 추론 (모델마다 한 번) ──
+@torch.no_grad()
+def infer25(path):
+    net = UFLDv2RowNet(SPEC25, grid_col=100, num_col=81, fc_norm=True)
+    load_weights(net, path)
+    net.keep_rows_only()
+    net = net.eval().to(DEV25)
+    out, t0 = {}, time.time()
+    for i in range(0, len(FR25), BS25):
+        batch = FR25[i:i + BS25]
+        imgs = [cv2.imread(str(f['ip'])) for f in batch]
+        x = torch.from_numpy(np.concatenate([preprocess(b, SPEC25) for b in imgs])).to(DEV25)
+        loc, ex = net(x)
+        loc, ex = loc.float().cpu().numpy(), ex.float().cpu().numpy()
+        for j, (f, b) in enumerate(zip(batch, imgs)):
+            h, w = b.shape[:2]
+            lanes = decode_rows(loc[j], ex[j], SPEC25, w, h)
+            out[f['key']] = (lanes[1], lanes[2], w, h)
+    print(f'  {path.name}: {len(out)}장 {time.time() - t0:.0f}초 ({DEV25})')
+    del net
+    if DEV25 == 'cuda':
+        torch.cuda.empty_cache()
+    return out
+
+
+PRED25 = {}
+for name, path in MODELS25.items():
+    if path.exists():
+        PRED25[name] = infer25(path)
+    else:
+        print(f'  {name}: {path} 없음 — 건너뜀')
+
+
+# ── 판정 ──
+def guard25(cut, existence_only):
+    d = copy.deepcopy(CFG25.to_dict()['lane']['ufld']['guard'])
+    d['width'].update(WIDTH25)
+    if existence_only:
+        d['min_straddle_margin'] = -1e9
+        d['width']['enabled'] = False
+        d['temporal']['enabled'] = False
+    return LaneGuard(Config(d), SPEC25.row_anchor, (cut, BOT25))
+
+
+def run25(name, cut, existence_only, mis):
+    rows, g, cur = [], None, None
+    for f in FR25:
+        if f['mis'] != mis:
+            continue
+        if f['seq'] != cur:
+            g, cur = guard25(cut, existence_only), f['seq']
+        L, R, w, h = PRED25[name][f['key']]
+        res = g.check(L, R, w, h, f['idx'] / 30.0)
+        gt = gt_rows25(f, w / f['W'], cut)
+        rows.append(dict(f=f, ok=res.valid, reason=res.reason, err=None if gt is None else err25(L, R, gt)))
+    return rows
+
+
+def stat25(rows):
+    n = sum(r['err'] is not None for r in rows)
+    e = np.array([r['err'][1] for r in rows if r['ok'] and r['err'] is not None])
+    k = len(e)
+    c = [int((e > t).sum()) for t in ERR25]
+    return dict(n=n, k=k, av=k / max(n, 1), rate=c[0] / max(k, 1), c=c,
+                strict=k > 0 and c[0] == 0, two=k > 0 and c[2] == 0 and c[0] / k <= RATE25)
+
+
+RES25 = {}
+for name in PRED25:
+    for cut in CUTS25:
+        for eo in (True, False):
+            for mis in (False, True):
+                RES25[(name, cut, eo, mis)] = run25(name, cut, eo, mis)
+
+print('\n' + '═' * 118)
+print('칸 = 사용 가능 비율 · 통과 중 0.10 초과 비율 · 0.10/0.15/0.25 초과 건수 · 판정(엄격 = 0.10 초과 0건 / 2단계 = 0.25 초과 0건 + 0.10 초과 ≤ 2%)')
+print('사용 가능 비율 = 통과 장수 / 정답 있는 장수. "0건"이어도 장수가 N이면 실제 오답률은 3/N 이하까지만 말할 수 있다(95%)')
+print('═' * 118)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"모델":<8}{"안전장치":<10}' + ''.join(f'{"범위 " + str(c):>26}' for c in CUTS25))
+    for name in PRED25:
+        for eo, gname in ((True, '존재만'), (False, '기본 전부')):
+            cells = []
+            for cut in CUTS25:
+                s = stat25(RES25[(name, cut, eo, mis)])
+                v = '통과0' if s['k'] == 0 else ('엄격✅' if s['strict'] else ('2단계✅' if s['two'] else '❌'))
+                cells.append(f'{s["av"] * 100:>3.0f}% {s["rate"] * 100:>4.1f}% {s["c"][0]:>2}/{s["c"][1]:>2}/{s["c"][2]:>2} {v:<5}')
+            print(f'  {name:<8}{gname:<10}' + ''.join(f'{c:>26}' for c in cells))
+    for name in PRED25:
+        s = stat25(RES25[(name, CUTS25[-1], False, mis)])
+        ub = f'{3 / s["k"] * 100:.2f}%' if s['k'] else '-'
+        print(f'  {name} 범위 {CUTS25[-1]} 기본 전부: 정답 있는 {s["n"]}장 중 통과 {s["k"]}장 → 오답 0건이어도 오답률 상한 약 {ub}')
+
+# ── 큰 오답이 몰린 시퀀스 ──
+BEST25 = '재학습' if '재학습' in PRED25 else '사전학습'
+CUT_SHOW25 = 0.68
+print(f'\n[{BEST25} · 범위 {CUT_SHOW25} · 기본 전부] 통과했는데 0.10 초과인 프레임이 있는 시퀀스')
+bad25 = []
+for mis in (False, True):
+    rs = RES25[(BEST25, CUT_SHOW25, False, mis)]
+    per = Counter(r['f']['seq'] for r in rs if r['ok'] and r['err'] is not None and r['err'][1] > ERR25[0])
+    for sq, n in per.most_common(8):
+        print(f'  {"틀어짐" if mis else "검증"} {sq}: {n}장')
+    bad25 += [r for r in rs if r['ok'] and r['err'] is not None and r['err'][1] > ERR25[0]]
+bad25.sort(key=lambda r: -r['err'][1])
+
+
+def show25(r, cut, title):
+    f = r['f']
+    bgr = cv2.imread(str(f['ip'])); vis = bgr.copy()
+    s = bgr.shape[1] / f['W']
+    for q in f['l4']:
+        if q is not None:
+            p = np.int32([(x * s, y * s) for x, y in sorted(q[3], key=lambda t: t[1])])
+            cv2.polylines(vis, [p], False, (200, 200, 200), 2)
+    for y, a, b in gt_rows25(f, s, cut):
+        cv2.circle(vis, (int(a), int(y)), 9, (255, 255, 0), 2); cv2.circle(vis, (int(b), int(y)), 9, (255, 255, 0), 2)
+    L, R, _, _ = PRED25[BEST25][f['key']]
+    for pts, col in ((L, (0, 0, 255)), (R, (0, 255, 0))):
+        for x, y in pts:
+            cv2.circle(vis, (int(x), int(y)), 4, col, -1)
+    cv2.line(vis, (0, int(cut * bgr.shape[0])), (vis.shape[1], int(cut * bgr.shape[0])), (0, 255, 255), 2)
+    plt.figure(figsize=(12, 6.5)); plt.imshow(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)); plt.axis('off')
+    plt.title(f'{title} — {f["key"]}  최대오차={r["err"][1]:.3f}\n'
+              '회색 = 라벨(자차·옆 4선)  하늘색 원 = 정답 v3  노랑 = 측정 구간 위끝  빨강·초록 = 예측', fontsize=9)
+    plt.show()
+
+
+print(f'\n[그림] 통과 오답 {len(bad25)}건 중 최대 {N_SHOW25}건')
+for r in bad25[:N_SHOW25]:
+    show25(r, CUT_SHOW25, f'[25] {BEST25} 통과 오답')
