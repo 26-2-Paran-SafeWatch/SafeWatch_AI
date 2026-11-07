@@ -3089,7 +3089,7 @@ def add_width22(R, out_name, cut):
     Wd = np.array([widths22(r['f'], *r['f']['preds'][out_name][:2], cut) for r in R], float).reshape(-1, 2)
     okw = ~np.isnan(Wd).any(1)
     cam = np.median(Wd[okw], 0) if okw.any() else np.array([np.nan, np.nan])
-    seqs = np.array([seq_of(r['f']) for r in R])
+    seqs = np.array([seq22(r['f']) for r in R])
     for i, r in enumerate(R):
         same = (seqs == seqs[i]) & okw; same[i] = False
         ref = {'카메라': cam, '시퀀스': np.median(Wd[same], 0) if same.sum() >= 4 else cam}
@@ -3213,6 +3213,7 @@ if key_f:
         show19(r, cut_f, f'[F-2] 보류된 맞는 프레임 (폭 차이 {np.expm1(min(r["dev22"]["카메라"], 5)) * 100:.0f}%)')
 else:
     print('\n[그림 F] 2단계 · 카메라 기준 · 폭±0.25 조건을 만족하는 범위가 없어 생략')
+
 
 
 # ============================== 23번 셀 ==============================
