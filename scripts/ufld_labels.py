@@ -206,3 +206,65 @@ def row_labels(l4: list[Cand | None], W: float, H: float, grid: int, anchors: np
         ok = np.isfinite(x) & (x >= 0) & (x <= W)
         lab[ok, 3 - li if flip else li] = np.minimum((x[ok] / W * (grid - 1)).astype(np.int64), grid - 1)
     return lab
+
+
+# ── 기하 증강용 정답 (2026-11-08) ─────────────────────────────────────────────
+# 사진을 이동·회전·확대하면 행 앵커 위치의 차선 x가 바뀌므로, 칸 번호(row_labels)가 아니라 차선 선 자체를
+# 저장해 두고 학습 때 같은 변환을 적용한 뒤 행 앵커에서 다시 읽는다 (원 저장소가 라벨 점을 같이 변환하는 것과 같은 방식).
+# 변환이 없으면 row_labels와 같은 칸 번호가 나온다 (tests/test_ufld_training.py로 대조).
+
+_EXT_EPS = 1e-3     # 아래쪽 직선 연장이 시작되는 지점 (픽셀) — row_labels와 같은 꺾임을 재현하려고 점을 하나 더 둔다
+
+
+def lane_polylines(l4: list[Cand | None], W: float, H: float, max_pts: int) -> np.ndarray:
+    """차선 4개를 (4, max_pts, 2) 배열(x/W, y/H — 원본 화면 비율, 빈 칸 NaN)로.
+
+    row_labels처럼 라벨 아래끝 밑은 화면 아래(y = H)까지 직선 연장한 점을 붙인다.
+    """
+    out = np.full((4, max_pts, 2), np.nan, np.float32)
+    for li, q in enumerate(l4):
+        if q is None:
+            continue
+        ps = sorted(q[3], key=lambda t: t[1])
+        ys = np.array([t[1] for t in ps], np.float64)
+        xs = np.array([t[0] for t in ps], np.float64)
+        pts = list(zip(xs, ys))
+        if ys[-1] < H and np.ptp(ys) > 1:
+            half = ys >= np.median(ys)
+            f = np.polyfit(ys[half], xs[half], 1) if np.ptp(ys[half]) > 1 else np.polyfit(ys, xs, 1)
+            y0 = min(ys[-1] + _EXT_EPS, H)
+            pts += [(float(np.polyval(f, y0)), y0), (float(np.polyval(f, H)), float(H))]
+        if len(pts) > max_pts:
+            raise ValueError(f"차선 점 {len(pts)}개 > max_pts {max_pts}")
+        a = np.array(pts, np.float64)
+        out[li, :len(a)] = np.stack([a[:, 0] / W, a[:, 1] / H], 1)
+    return out
+
+
+def polyline_rows(polys: np.ndarray, anchors: np.ndarray, grid: int, img_w: int, img_h: int,
+                  M: np.ndarray | None = None, flip: bool = False) -> np.ndarray:
+    """lane_polylines 출력 → 행 앵커별 칸 번호 (n_row, 4), -1 = 없음.
+
+    img_w·img_h = 변환을 적용하는 화면 크기(학습 사진 = 자르기 전 모델 입력 크기). M = 사진에 적용한 2×3 아핀 행렬
+    (cv2.warpAffine과 같은 것), flip = 그 뒤 좌우 뒤집기. 변환 뒤 화면 밖으로 나간 행은 -1.
+    """
+    n = len(anchors)
+    lab = np.full((n, 4), -1, np.int64)
+    ya = np.asarray(anchors, np.float64) * img_h
+    for li in range(4):
+        p = polys[li]
+        p = p[np.isfinite(p[:, 0])].astype(np.float64)
+        if len(p) < 2:
+            continue
+        xy = p * (img_w, img_h)
+        if M is not None:
+            xy = xy @ np.asarray(M, np.float64)[:, :2].T + np.asarray(M, np.float64)[:, 2]
+        if flip:
+            xy[:, 0] = img_w - xy[:, 0]
+        xy = xy[np.argsort(xy[:, 1], kind="stable")]
+        x = np.full(n, np.nan)
+        ins = (ya >= xy[0, 1]) & (ya <= xy[-1, 1])
+        x[ins] = np.interp(ya[ins], xy[:, 1], xy[:, 0])
+        ok = np.isfinite(x) & (x >= 0) & (x <= img_w)
+        lab[ok, 3 - li if flip else li] = np.minimum((x[ok] / img_w * (grid - 1)).astype(np.int64), grid - 1)
+    return lab

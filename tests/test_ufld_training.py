@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 import yaml
 
-from scripts.ufld_labels import LabelRules, ego_lanes, frame_key, parse_lanes, row_labels, sequence_of
+from scripts.ufld_labels import (LabelRules, ego_lanes, frame_key, lane_polylines, parse_lanes, polyline_rows,
+                                 row_labels, sequence_of)
 
 W, H = 1920, 1080
 
@@ -84,6 +85,99 @@ def test_row_labels_flip_mirrors_lanes():
     assert ok.sum() > 30
     assert np.abs(a[ok, 1] + b[ok, 2] - 199).max() <= 1          # 칸 번호 거울상 (내림 오차 1칸)
     assert (a[ANCH * H > 1060, 1] >= 0).all()                     # 라벨 아래끝 밑으로 직선 연장
+
+
+def test_polyline_rows_without_transform_equals_row_labels():
+    """기하 증강용 정답(차선 선 → 행 칸)이 변환 없을 때 기존 정답과 같다 (실제 Training 6,000장: 346만 칸 중 10칸, 1칸 차)."""
+    for road in (_road(), _road(dashed_left=False, double_right=True), _road(cx=900, half=500)):
+        _, _, lanes = parse_lanes(_xml(road))
+        l4 = ego_lanes(lanes, W, H)
+        pl = lane_polylines(l4, W, H, 64)
+        for flip in (False, True):
+            a = row_labels(l4, W, H, 200, ANCH, flip=flip)
+            b = polyline_rows(pl, ANCH, 200, 1600, 533, flip=flip)
+            assert (a != b).sum() <= 2 and np.abs(a - b).max() <= 1
+
+
+def test_polyline_rows_follow_affine_transform():
+    _, _, lanes = parse_lanes(_xml(_road(dashed_left=False)))
+    l4 = ego_lanes(lanes, W, H)
+    pl = lane_polylines(l4, W, H, 64)
+    w, h = 1600, 533
+    base = polyline_rows(pl, ANCH, 200, w, h)
+    shift = np.array([[1, 0, 80.0], [0, 1, 0]])                  # 오른쪽으로 80px = 199칸 기준 약 10칸
+    moved = polyline_rows(pl, ANCH, 200, w, h, shift)
+    ok = (base[:, 1] >= 0) & (moved[:, 1] >= 0)
+    d = moved[ok, 1] - base[ok, 1]
+    assert ok.sum() > 30 and d.min() >= 9 and d.max() <= 11
+    up = polyline_rows(pl, ANCH, 200, w, h, np.array([[1, 0, 0], [0, 1, -100.0]]))   # 위로 밀면 아래쪽 행은 정답 없음
+    assert (up[ANCH * h > h - 100 + 1, 1] == -1).all() and (up[:, 1] >= 0).sum() > 10
+
+
+def _line_dataset(tmp: Path, geo: dict | None):
+    """흰 직선 하나(자차 좌)를 그린 사진 + 그 정답으로 만든 형식 2 데이터 — 증강 뒤 사진과 정답이 맞는지 본다."""
+    from src.lane.ufld import UFLDSpec
+    spec = UFLDSpec(input_w=320, input_h=64, crop_ratio=0.6, grid_num=40, num_row=8,
+                    row_anchor_start=0.42, row_anchor_end=1.0, num_lanes=4)
+    fw, fh = 320, 106
+    img = np.zeros((fh, fw, 3), np.uint8)
+    p0, p1 = (60.0, 106.0), (150.0, 30.0)                         # 화면 좌표 (x, y)
+    cv2.line(img, tuple(map(int, p0)), tuple(map(int, p1)), (255, 255, 255), 3)
+    (tmp / "img").mkdir(parents=True)
+    cv2.imwrite(str(tmp / "img" / "a.png"), img)
+    pl = np.full((4, 8, 2), np.nan, np.float32)
+    pl[1, :2] = [[p1[0] / fw, p1[1] / fh], [p0[0] / fw, p0[1] / fh]]
+    rows = polyline_rows(pl, spec.row_anchor, spec.grid_num, fw, fh)
+    rows_f = polyline_rows(pl, spec.row_anchor, spec.grid_num, fw, fh, flip=True)
+    np.savez(tmp / "train.npz", paths=np.array(["img/a.png"]), seqs=np.array(["s"]), rows=rows[None].astype(np.int16),
+             rows_flip=rows_f[None].astype(np.int16), polys=pl[None])
+    aug = dict(hflip=0.0, brightness=0.0, contrast_shift=0.0)
+    if geo is not None:
+        aug["geometric"] = geo
+    return spec, aug
+
+
+def test_augmented_image_and_label_stay_aligned(tmp_path):
+    pytest.importorskip("torch")
+    from scripts.train_ufld import UFLDDataset, _MEAN, _STD
+    geo = dict(prob=1.0, rotate_deg=6.0, scale=[0.8, 1.2], shift_x=0.12, shift_y=0.17)
+    spec, aug = _line_dataset(tmp_path, geo)
+    checked = 0
+    for seed in range(20):
+        ds = UFLDDataset(tmp_path, "train", spec, aug, fixed_seed=seed)
+        x, y = ds[0]
+        img = (x.numpy() * _STD + _MEAN)[0]                       # (64, 320) 0~1, 아래 잘린 사진
+        full_h = 106
+        for r, a in enumerate(spec.row_anchor):
+            if y[r, 1] < 0:
+                continue
+            row = int(round(a * full_h)) - (full_h - 64)          # 잘린 사진에서의 행
+            if not 1 <= row < 63:
+                continue
+            bright = np.where(img[row] > 0.5)[0]
+            if len(bright) == 0:
+                continue
+            gx = float(y[r, 1]) / (spec.grid_num - 1) * 320
+            assert abs(bright.mean() - gx) <= 320 / (spec.grid_num - 1) + 4, (seed, r)
+            checked += 1
+    assert checked > 40
+
+
+def test_fixed_seed_is_repeatable_and_old_format_rejected(tmp_path):
+    pytest.importorskip("torch")
+    from scripts.train_ufld import UFLDDataset
+    geo = dict(prob=1.0, rotate_deg=6.0, scale=[0.8, 1.2], shift_x=0.12, shift_y=0.17)
+    spec, aug = _line_dataset(tmp_path / "d", geo)
+    a, b = UFLDDataset(tmp_path / "d", "train", spec, aug, fixed_seed=3), UFLDDataset(tmp_path / "d", "train", spec, aug, fixed_seed=3)
+    assert (a[0][1] == b[0][1]).all() and (a[0][0] == b[0][0]).all()
+    plain = UFLDDataset(tmp_path / "d", "train", spec, None)
+    assert (plain[0][1].numpy() == np.load(tmp_path / "d" / "train.npz")["rows"][0]).all()
+    d = dict(np.load(tmp_path / "d" / "train.npz"))
+    del d["polys"]
+    (tmp_path / "old").mkdir()
+    np.savez(tmp_path / "old" / "train.npz", **d)
+    with pytest.raises(ValueError, match="옛 형식"):
+        UFLDDataset(tmp_path / "old", "train", spec, aug)
 
 
 def test_frame_key_and_sequence():
@@ -154,8 +248,10 @@ def test_prepare_then_train_end_to_end(tmp_path, monkeypatch):
     tr_npz, va_npz = np.load(out / "train.npz"), np.load(out / "val.npz")
     assert not set(tr_npz["seqs"]) & set(va_npz["seqs"])        # 시퀀스 단위 분리
     im = cv2.imread(str(out / tr_npz["paths"][0]))
-    assert im.shape == (64, 320, 3)
+    assert im.shape == (106, 320, 3)                            # 자르기 전 (64 / 0.6) — 기하 증강용 (형식 2)
+    assert man["format"] == 2 and man["frame_size"] == [320, 106]
     assert tr_npz["rows"].shape[1:] == (8, 4) and (tr_npz["rows"][:, :, 1:3] >= 0).any()
+    assert tr_npz["polys"].shape[1:] == (4, 64, 2)
 
     _run(prep, args, monkeypatch)                               # 다시 실행 — 이미지는 재사용, 결과 같음
     assert json.loads((out / "manifest.json").read_text())["splits"] == man["splits"]

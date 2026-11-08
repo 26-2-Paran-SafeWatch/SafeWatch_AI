@@ -8,7 +8,12 @@
   `UFLDv2RowNet`(원 저장소와 키 이름 같음)을 그대로 쓴다.
 - 손실: 노트북 18번 셀 `loss18`과 같다 — 행 위치 focal CE + 존재 CE + 평균 위치 smooth L1 × mean_loss_weight.
   열(col) 출력은 실행 경로에서 쓰지 않으므로 학습하지 않는다(가중치는 그대로 남는다).
-- 에폭 선택: 학습 시퀀스와 겹치지 않는 선택용(val) 시퀀스의 손실이 가장 낮은 에폭 (노트북 19번과 같음).
+- 증강 (2026-11-08): 원 저장소처럼 사진을 이동·회전·확대(기하 증강)하고 차선 정답도 같이 변환한다
+  (scripts/ufld_labels.py polyline_rows). 1차 재학습(뒤집기·밝기만)은 학습 카메라 계열(검증)은 좋아졌지만
+  장착이 다른 카메라(노트북 '틀어짐')에서 나빠졌다 — 차선이 화면 어디쯤 나오는지를 외운 것으로 본다.
+- 에폭 선택: 학습 시퀀스와 겹치지 않는 선택용(val) 시퀀스의 손실. 기본은 **기하 증강을 고정 난수로 건 선택용 손실**
+  (train.select_by: aug) — 선택용 시퀀스도 학습과 같은 카메라 계열이라, 그대로 재면 카메라가 바뀌어도 버티는지가
+  반영되지 않는다. 증강 없는 손실도 함께 기록한다.
   최종 판정은 이 스크립트가 아니라 노트북의 검증·틀어짐 평가(학습에서 뺀 시퀀스)로 한다.
 - 저장: `--out`에 최고 에폭 가중치를 원 저장소와 같은 형식({'model': state_dict})으로 저장한다 →
   노트북 `load_ufld`·`scripts/export_ufld_onnx.py --weights`가 그대로 연다.
@@ -32,6 +37,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from scripts.export_ufld_onnx import UFLDv2RowNet, load_weights
+from scripts.ufld_labels import polyline_rows
 from src.lane.ufld import UFLDSpec
 from src.utils.config import Config, load_config
 
@@ -41,17 +47,43 @@ _MEAN = np.array([0.485, 0.456, 0.406], np.float32).reshape(3, 1, 1)
 _STD = np.array([0.229, 0.224, 0.225], np.float32).reshape(3, 1, 1)
 
 
-class UFLDDataset(Dataset):
-    """prepare_ufld_dataset.py 출력 하나(train 또는 val). 이미지는 이미 모델 입력 크기(BGR JPEG)."""
+def random_affine(rng: np.random.Generator, geo: dict, w: int, h: int) -> np.ndarray | None:
+    """원 저장소 증강(회전 ±rotate_deg, 확대 scale, 이동 ±shift_x·w / ±shift_y·h) → cv2.warpAffine용 2×3 행렬.
 
-    def __init__(self, root: Path, split: str, spec: UFLDSpec, aug: Config | None):
+    회전·확대는 화면 가운데 기준. prob 확률로만 건다(나머지는 None = 변환 없음).
+    """
+    if rng.random() >= float(geo["prob"]):
+        return None
+    lo, hi = (float(v) for v in geo["scale"])
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), float(rng.uniform(-1, 1) * float(geo["rotate_deg"])), float(rng.uniform(lo, hi)))
+    m[0, 2] += rng.uniform(-1, 1) * float(geo["shift_x"]) * w
+    m[1, 2] += rng.uniform(-1, 1) * float(geo["shift_y"]) * h
+    return m
+
+
+class UFLDDataset(Dataset):
+    """prepare_ufld_dataset.py 출력 하나(train 또는 val). 이미지는 자르기 전 모델 입력 크기(BGR JPEG, 형식 2).
+
+    aug = train.augment 설정 (None = 증강 없음). fixed_seed가 있으면 i번 사진의 난수를 (fixed_seed, i)로 고정 —
+    에폭마다 같은 변환이 걸려 선택용 손실을 에폭끼리 비교할 수 있다. color=False면 뒤집기·밝기 없이 기하 증강만.
+    """
+
+    def __init__(self, root: Path, split: str, spec: UFLDSpec, aug: Config | None,
+                 fixed_seed: int | None = None, color: bool = True):
         d = np.load(root / f"{split}.npz")
-        self.root, self.spec, self.aug = root, spec, aug
+        self.root, self.spec, self.fixed_seed, self.color = root, spec, fixed_seed, color
+        # 평범한 dict로 들고 있는다 — Config는 피클이 안 돼 DataLoader 작업 프로세스(spawn)로 못 넘긴다
+        self.aug = aug.to_dict() if isinstance(aug, Config) else aug
         self.paths = d["paths"]
         self.rows = d["rows"].astype(np.int64)
         self.rows_flip = d["rows_flip"].astype(np.int64)
+        self.polys = d["polys"] if "polys" in d.files else None
+        self.full_h = int(spec.input_h / spec.crop_ratio)
+        self.anchors = spec.row_anchor
         if len(self.paths) and self.rows.shape[1:] != (spec.num_row, spec.num_lanes):
             raise ValueError(f"{split}.npz 정답 형상 {self.rows.shape[1:]}가 설정과 다릅니다 — 데이터를 다시 만들 것")
+        if len(self.paths) and self.polys is None:
+            raise ValueError(f"{root}는 옛 형식(잘린 사진·차선 선 없음) — prepare_ufld_dataset.py로 다시 만들 것")
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -60,17 +92,29 @@ class UFLDDataset(Dataset):
         bgr = cv2.imread(str(self.root / str(self.paths[i])), cv2.IMREAD_COLOR)
         if bgr is None:
             raise FileNotFoundError(self.root / str(self.paths[i]))
-        if bgr.shape[:2] != (self.spec.input_h, self.spec.input_w):
-            raise ValueError(f"이미지 크기 {bgr.shape[:2]}가 설정과 다릅니다: {self.paths[i]}")
-        x = bgr[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0          # RGB CHW 0~1
-        y = self.rows[i]
+        if bgr.shape[:2] != (self.full_h, self.spec.input_w):
+            raise ValueError(f"이미지 크기 {bgr.shape[:2]} ≠ ({self.full_h}, {self.spec.input_w}): {self.paths[i]}"
+                             " — 옛 형식(잘린 사진)이면 데이터를 다시 만들 것")
+        y, flip, m = self.rows[i], False, None
         if self.aug is not None:
-            rng = np.random.default_rng()
-            if rng.random() < float(self.aug.hflip):
-                x = x[:, :, ::-1]
+            rng = np.random.default_rng(None if self.fixed_seed is None else (self.fixed_seed, i))
+            if "geometric" in self.aug:
+                m = random_affine(rng, self.aug["geometric"], self.spec.input_w, self.full_h)
+            if self.color:
+                flip = rng.random() < float(self.aug["hflip"])
+            if m is not None:
+                bgr = cv2.warpAffine(bgr, m, (self.spec.input_w, self.full_h), flags=cv2.INTER_LINEAR,
+                                     borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                y = polyline_rows(self.polys[i], self.anchors, self.spec.grid_num, self.spec.input_w, self.full_h,
+                                  m, flip)
+            elif flip:
                 y = self.rows_flip[i]
-            a = 1.0 + rng.uniform(-1, 1) * float(self.aug.brightness)
-            b = rng.uniform(-1, 1) * float(self.aug.contrast_shift)
+        x = bgr[-self.spec.input_h:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0   # 아래 자르기, RGB CHW 0~1
+        if flip:
+            x = x[:, :, ::-1]
+        if self.aug is not None and self.color:
+            a = 1.0 + rng.uniform(-1, 1) * float(self.aug["brightness"])
+            b = rng.uniform(-1, 1) * float(self.aug["contrast_shift"])
             x = np.clip(x * a + b, 0.0, 1.0)
         x = (x - _MEAN) / _STD
         return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)), torch.from_numpy(np.ascontiguousarray(y))
@@ -133,6 +177,7 @@ def main() -> None:
     epochs = args.epochs or int(tc.epochs)
     dev = pick_device()
     amp = bool(tc.amp) and dev == "cuda"
+    mean_w = float(tc.mean_loss_weight)
     torch.manual_seed(0)
     np.random.seed(0)
 
@@ -141,13 +186,33 @@ def main() -> None:
     ds_va = UFLDDataset(root, "val", spec, None)
     if len(ds_tr) == 0 or len(ds_va) == 0:
         raise SystemExit(f"데이터가 비었습니다 — 학습 {len(ds_tr)}장, 선택용 {len(ds_va)}장")
+    select_by = str(tc.select_by)
+    if select_by not in ("plain", "aug"):
+        raise SystemExit(f"train.select_by는 plain 또는 aug: {select_by}")
+    has_geo = "geometric" in tc.augment
+    if select_by == "aug" and not has_geo:
+        raise SystemExit("select_by: aug인데 train.augment.geometric 설정이 없습니다")
     nw = int(tc.num_workers)
     dl_tr = DataLoader(ds_tr, batch_size=int(tc.batch_size), shuffle=True, num_workers=nw,
                        pin_memory=dev == "cuda", drop_last=True, persistent_workers=nw > 0)
     dl_va = DataLoader(ds_va, batch_size=int(tc.batch_size), shuffle=False, num_workers=nw,
                        pin_memory=dev == "cuda", persistent_workers=nw > 0)
-    logger.info("장치 %s (fp16 %s) · 학습 %d장 · 선택용 %d장 · 배치 %d · 에폭 %d",
-                dev, amp, len(ds_tr), len(ds_va), int(tc.batch_size), epochs)
+    dl_va_aug = None
+    if has_geo:                                              # 기하 증강만, 사진마다 고정 난수 → 에폭끼리 비교 가능
+        ds_va_aug = UFLDDataset(root, "val", spec, tc.augment, fixed_seed=int(tc.select_seed), color=False)
+        dl_va_aug = DataLoader(ds_va_aug, batch_size=int(tc.batch_size), shuffle=False, num_workers=nw,
+                               pin_memory=dev == "cuda", persistent_workers=nw > 0)
+    logger.info("장치 %s (fp16 %s) · 학습 %d장 · 선택용 %d장 · 배치 %d · 에폭 %d · 기하 증강 %s · 에폭 선택 %s",
+                dev, amp, len(ds_tr), len(ds_va), int(tc.batch_size), epochs,
+                "켬" if has_geo else "끔", "증강 건 선택용 손실" if select_by == "aug" else "선택용 손실")
+
+    def val_losses() -> tuple[float, float | None]:
+        v = evaluate(net, dl_va, dev, mean_w, amp)
+        va = evaluate(net, dl_va_aug, dev, mean_w, amp) if dl_va_aug is not None else None
+        return v, va
+
+    def score(v: float, va: float | None) -> float:
+        return va if select_by == "aug" else v
 
     net = UFLDv2RowNet(spec, args.grid_col, args.num_col, fc_norm=True)
     load_weights(net, Path(args.weights))
@@ -160,7 +225,6 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda i: (i + 1) / warm if i < warm else 0.5 * (1 + math.cos(math.pi * (i - warm) / max(1, total - warm))))
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
-    mean_w = float(tc.mean_loss_weight)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -176,12 +240,13 @@ def main() -> None:
         scaler.load_state_dict(ck["scaler"])
         start_ep, best = int(ck["epoch"]) + 1, float(ck["best"])
         history = json.loads(hist_path.read_text()) if hist_path.exists() else []
-        logger.info("이어 하기 — 에폭 %d부터 (지금까지 최저 선택용 손실 %.4f)", start_ep, best)
+        logger.info("이어 하기 — 에폭 %d부터 (지금까지 최저 선택 기준 손실 %.4f)", start_ep, best)
     else:
-        v0 = evaluate(net, dl_va, dev, mean_w, amp)
-        history.append(dict(epoch=0, train_loss=None, val_loss=v0))
-        best = v0                                            # 사전학습보다 나아진 에폭만 저장한다
-        logger.info("학습 전 선택용 손실 %.4f (CULane 사전학습 그대로)", v0)
+        v0, va0 = val_losses()
+        history.append(dict(epoch=0, train_loss=None, val_loss=v0, val_aug_loss=va0))
+        best = score(v0, va0)                                # 사전학습보다 나아진 에폭만 저장한다
+        logger.info("학습 전 선택용 손실 %.4f%s (CULane 사전학습 그대로)", v0,
+                    "" if va0 is None else f" · 증강 건 선택용 손실 {va0:.4f}")
 
     for ep in range(start_ep, epochs + 1):
         t0, tot, nb = time.time(), 0.0, 0
@@ -201,21 +266,24 @@ def main() -> None:
             nb += 1
             if step % int(tc.log_every) == 0:
                 logger.info("  에폭 %d 스텝 %d/%d 손실 %.4f lr %.2e", ep, step, steps_per_ep, tot / nb, sched.get_last_lr()[0])
-        vl = evaluate(net, dl_va, dev, mean_w, amp)
+        vl, vla = val_losses()
         mark = ""
-        if vl < best:
-            best = vl
+        if score(vl, vla) < best:
+            best = score(vl, vla)
             torch.save({"model": {k: v.cpu() for k, v in net.state_dict().items()}, "epoch": ep, "val_loss": vl,
+                        "val_aug_loss": vla, "select_by": select_by,
                         "spec": dict(spec.__dict__), "data": str(root)}, out)
             mark = "  ← 최저, 저장"
-        history.append(dict(epoch=ep, train_loss=tot / max(nb, 1), val_loss=vl, sec=round(time.time() - t0)))
+        history.append(dict(epoch=ep, train_loss=tot / max(nb, 1), val_loss=vl, val_aug_loss=vla,
+                            sec=round(time.time() - t0)))
         hist_path.write_text(json.dumps(history, indent=1))
         torch.save({"model": net.state_dict(), "optimizer": opt.state_dict(), "scheduler": sched.state_dict(),
                     "scaler": scaler.state_dict(), "epoch": ep, "best": best}, last_path)
-        logger.info("에폭 %2d  학습 손실 %.4f  선택용 손실 %.4f  (%.0f분)%s",
-                    ep, tot / max(nb, 1), vl, (time.time() - t0) / 60, mark)
+        logger.info("에폭 %2d  학습 손실 %.4f  선택용 손실 %.4f%s  (%.0f분)%s",
+                    ep, tot / max(nb, 1), vl, "" if vla is None else f"  증강 건 선택용 {vla:.4f}",
+                    (time.time() - t0) / 60, mark)
     if out.exists():
-        logger.info("끝 — 최저 선택용 손실 %.4f → %s", best, out)
+        logger.info("끝 — 최저 선택 기준 손실 %.4f → %s", best, out)
     else:
         logger.warning("끝 — 어느 에폭도 사전학습보다 선택용 손실이 낮지 않아 저장하지 않았습니다")
 

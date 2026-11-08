@@ -16,9 +16,11 @@
    `configs/ufld_train.yaml`의 data.exclude_dates 날짜도 통째로 뺀다.
 2. 라벨 XML(설정 화각만, 같은 프레임의 여러 버전은 이름순 마지막 것)을 정답 v3로 바꾼다 (scripts/ufld_labels.py).
    자차 차로 좌·우가 없거나 폭이 이상한 프레임은 뺀다 — '차선 없음'을 잘못 배우지 않게(노트북 18·19번과 같음).
-3. 이미지를 실행 경로와 같은 방식(src/lane/ufld.py preprocess)으로 모델 입력 크기로 줄이고 아래쪽만 잘라 JPEG로 저장한다.
-   학습 때 다시 줄일 필요가 없어 빠르고, 디스크도 원본의 몇 분의 1이다.
-4. 시퀀스 단위로 학습/선택용(val)을 나눠 `train.npz`·`val.npz`(행 정답, 뒤집은 정답)와 `manifest.json`을 쓴다.
+3. 이미지를 실행 경로와 같은 방식(src/lane/ufld.py preprocess)으로 모델 입력 폭에 맞춰 줄이되 **자르지 않고**
+   (1600×533) JPEG로 저장한다. 학습 때 이동·회전·확대(기하 증강)를 한 뒤 아래 320행을 자른다 — 미리 자르면
+   위로 밀거나 돌릴 때 잘려 나간 부분을 되살릴 수 없다 (2026-11-08, 형식 2).
+4. 시퀀스 단위로 학습/선택용(val)을 나눠 `train.npz`·`val.npz`(행 정답, 뒤집은 정답, 기하 증강용 차선 선)와
+   `manifest.json`을 쓴다.
 
 이미 저장된 이미지는 다시 만들지 않는다 — 중간에 끊겨도 같은 명령을 다시 실행하면 이어서 한다.
 """
@@ -40,13 +42,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scripts.ufld_labels import LabelRules, ego_lanes, frame_key, parse_lanes, row_labels, sequence_of
+from scripts.ufld_labels import LabelRules, ego_lanes, frame_key, lane_polylines, parse_lanes, row_labels, sequence_of
 from src.lane.ufld import UFLDSpec
 from src.utils.config import load_config
 
 logger = logging.getLogger("safewatch.prepare_ufld")
 
 _FOV = re.compile(r"\d+_(전방|측방)")
+FORMAT = 2              # 1 = 잘린 1600×320 사진 (기하 증강 불가) / 2 = 자르기 전 1600×533 + 차선 선
+MAX_PTS = 64            # 차선 하나의 점 수 상한 (Training 60_전방 6,000장 실측 최대 44)
 
 
 def _nfc(s: str) -> str:
@@ -64,11 +68,10 @@ def excluded_sequences(label_zip: Path) -> set[str]:
         return {sequence_of(frame_key(_nfc(n))) for n in zf.namelist() if n.lower().endswith(".xml")}
 
 
-def to_model_input(bgr: np.ndarray, spec: UFLDSpec) -> np.ndarray:
-    """src/lane/ufld.py preprocess의 크기 변환 부분 — BGR uint8 (input_h, input_w, 3)."""
+def to_train_frame(bgr: np.ndarray, spec: UFLDSpec) -> np.ndarray:
+    """src/lane/ufld.py preprocess의 크기 변환 부분, 자르기 전 — BGR uint8 (input_h/crop_ratio, input_w, 3)."""
     resized_h = int(spec.input_h / spec.crop_ratio)
-    resized = cv2.resize(bgr, (spec.input_w, resized_h), interpolation=cv2.INTER_LINEAR)
-    return resized[-spec.input_h:]
+    return cv2.resize(bgr, (spec.input_w, resized_h), interpolation=cv2.INTER_LINEAR)
 
 
 def _write_images(task: tuple[str, list[tuple[str, str]], dict, int]) -> tuple[int, int]:
@@ -87,7 +90,7 @@ def _write_images(task: tuple[str, list[tuple[str, str]], dict, int]) -> tuple[i
                 failed += 1
                 continue
             outp.parent.mkdir(parents=True, exist_ok=True)
-            ok, buf = cv2.imencode(".jpg", to_model_input(bgr, spec), [cv2.IMWRITE_JPEG_QUALITY, quality])
+            ok, buf = cv2.imencode(".jpg", to_train_frame(bgr, spec), [cv2.IMWRITE_JPEG_QUALITY, quality])
             if not ok:
                 failed += 1
                 continue
@@ -162,6 +165,7 @@ def main() -> None:
             recs.append(dict(key=key, seq=sequence_of(key),
                              rows=row_labels(l4, W, H, spec.grid_num, anchors).astype(np.int16),
                              rows_flip=row_labels(l4, W, H, spec.grid_num, anchors, flip=True).astype(np.int16),
+                             polys=lane_polylines(l4, W, H, MAX_PTS),
                              n_lanes=sum(q is not None for q in l4)))
     for z in zips.values():
         z.close()
@@ -187,7 +191,7 @@ def main() -> None:
     val_seqs = set(seqs[: max(1, round(len(seqs) * float(tcfg.data.val_frac)))])
     for r in recs:
         r["split"] = "val" if r["seq"] in val_seqs else "train"
-        r["path"] = f"img/{r['split']}/{r['seq']}/{r['key']}.jpg"
+        r["path"] = f"img{FORMAT}/{r['split']}/{r['seq']}/{r['key']}.jpg"
 
     # ── 5. 이미지 저장 ──
     tasks: dict[str, list[tuple[str, str]]] = {}
@@ -220,11 +224,13 @@ def main() -> None:
             seqs=np.array([r["seq"] for r in rs]),
             rows=np.stack([r["rows"] for r in rs]) if rs else np.zeros((0, spec.num_row, 4), np.int16),
             rows_flip=np.stack([r["rows_flip"] for r in rs]) if rs else np.zeros((0, spec.num_row, 4), np.int16),
+            polys=np.stack([r["polys"] for r in rs]) if rs else np.zeros((0, 4, MAX_PTS, 2), np.float32),
         )
         summary[split] = dict(frames=len(rs), sequences=len({r["seq"] for r in rs}),
                               lanes_per_frame=round(float(np.mean([r["n_lanes"] for r in rs])), 2) if rs else 0)
     manifest = dict(
-        created=time.strftime("%Y-%m-%d %H:%M:%S"), fov=fov, spec=spec_d,
+        created=time.strftime("%Y-%m-%d %H:%M:%S"), format=FORMAT, fov=fov, spec=spec_d,
+        frame_size=[spec.input_w, int(spec.input_h / spec.crop_ratio)],
         label_rules=rules.__dict__, excluded_sequences=len(ex_seqs), excluded_dates=sorted(ex_dates),
         skipped=dict(skip), splits=summary,
         label_zips=[Path(z).name for z in args.label_zips], image_zips=[Path(z).name for z in args.image_zips],
