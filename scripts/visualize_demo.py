@@ -18,6 +18,7 @@ module named 'src'`가 난다 — `src/main.py`·`scripts/benchmark.py`와 같�
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -100,13 +101,45 @@ def _draw_lane_image(image: np.ndarray, lane: LaneModel) -> None:
 
 def process_frame(
     image: np.ndarray, detector: VehicleDetector, lane_detector, timestamp: float | None = None
-) -> np.ndarray:
+) -> tuple[np.ndarray, object]:
     annotated = image.copy()
     boxes = detector.detect(image)
     lane = lane_detector.detect(image, vehicle_boxes=boxes, timestamp=timestamp)
     draw_vehicle_boxes(annotated, boxes)
     draw_lane(annotated, lane, lane_detector)
-    return annotated
+    return annotated, lane
+
+
+# 보류 이유 설명 (opencv 경로의 이유 문자열은 그대로 출력)
+REASON_TEXT = {
+    "existence": "차선이 측정 구간에 충분히 안 나옴",
+    "geometry": "차선 모양 이상(교차·순서 뒤바뀜)",
+    "straddle": "화면 가운데가 예측 차로 밖",
+    "width_calibrating": "차로 폭 기록 모으는 중(시작 직후 정상)",
+    "width": "차로 폭이 최근 기준보다 급변",
+    "temporal": "직전 프레임 대비 급변",
+}
+
+
+def print_lane_summary(lanes: list, width: int, height: int, method: str) -> None:
+    """영상 전체의 차선 통과·보류 요약 — 모델이 일을 하는지 숫자로 본다."""
+    n = len(lanes)
+    if n == 0:
+        return
+    valid = [i for i, ln in enumerate(lanes) if ln.valid]
+    reasons = Counter(ln.reject_reason or "기타" for ln in lanes if not ln.valid)
+    calib = reasons.get("width_calibrating", 0)
+    print(f"\n── 차선 요약 ({width}×{height}, {n}프레임) ──")
+    if method == "ufld" and abs(width / max(height, 1) - 16 / 9) > 0.05:
+        print(f"⚠️ 16:9가 아님 — UFLD는 16:9 블랙박스 화면으로 학습했다. 늘어난 화면이라 결과를 믿기 어렵다")
+    print(f"  통과(차선 잡음): {len(valid)}/{n} ({len(valid) / n:.0%})")
+    if 0 < calib < n:
+        print(f"  폭 보정 끝난 뒤 통과: {len(valid)}/{n - calib} ({len(valid) / (n - calib):.0%})"
+              f"  ← 시작 직후 폭 기록 모으는 {calib}프레임 제외")
+    for r, c in reasons.most_common():
+        print(f"  보류 {r:<18} {c:>4}  {REASON_TEXT.get(r, '')}")
+    confs = [ln.confidence for ln in lanes]
+    print(f"  신뢰도 중앙값 {float(np.median(confs)):.2f} · 통과 프레임 번호 {valid[:5]}{' …' if len(valid) > 5 else ''}")
 
 
 def main() -> None:
@@ -123,7 +156,8 @@ def main() -> None:
         image = cv2.imread(str(source_path))
         if image is None:
             raise FileNotFoundError(f"이미지를 읽을 수 없습니다: {source_path}")
-        annotated = process_frame(image, detector, lane_detector)
+        annotated, lane = process_frame(image, detector, lane_detector)
+        print(f"lane valid={lane.valid} conf={lane.confidence:.2f} reason={lane.reject_reason}")
         cv2.imwrite(str(output_path), annotated)
         print(f"저장됨: {output_path}")
         return
@@ -140,16 +174,20 @@ def main() -> None:
     )
 
     frame_count = 0
+    lanes = []
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        writer.write(process_frame(frame, detector, lane_detector, timestamp=frame_count / fps))
+        annotated, lane = process_frame(frame, detector, lane_detector, timestamp=frame_count / fps)
+        writer.write(annotated)
+        lanes.append(lane)
         frame_count += 1
 
     cap.release()
     writer.release()
     print(f"저장됨: {output_path} ({frame_count} 프레임)")
+    print_lane_summary(lanes, width, height, cfg.lane.method)
 
 
 if __name__ == "__main__":
