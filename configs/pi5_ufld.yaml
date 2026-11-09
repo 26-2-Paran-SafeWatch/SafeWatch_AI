@@ -1,0 +1,18 @@
+# Pi5 + 차선 딥러닝(UFLDv2) 시험용 — pi5.yaml을 상속하고 차선 인식만 UFLD로 바꾼다.
+# 실행·모델 받는 법: docs/hw-handoff-guide.md 2.5절
+#
+# ⚠️ 시험용이다. 맥 CPU(4스레드)에서도 UFLD 한 장에 약 141ms라 Pi5 CPU로는 실시간이 안 나올 가능성이 크다
+#    (NPU 도입 전제 — docs/lane-detection-dl-plan.md 3-1). 먼저 benchmark로 lane 단계 시간을 잰다.
+
+extends: pi5.yaml
+
+input:
+  # UFLD는 16:9 블랙박스 화면(AI Hub 1920×1080)으로 학습했다 — pi5.yaml의 320×320 정사각형은 차선 모델에 맞지 않는다.
+  # 1280×720은 system-architecture.md의 카메라 main 스트림 값. 차량 검출은 모델 입력 크기로 따로 줄여 쓴다.
+  resolution: [1280, 720]
+
+lane:
+  method: ufld
+  ufld:
+    # 2차 재학습(기하 증강 12에폭, 노트북 25번 셀 기준 현재 최선) — 노트북 28번 셀이 드라이브 ufld/에 만든 파일
+    model_path: data/models/ufld_aihub_aug.onnx

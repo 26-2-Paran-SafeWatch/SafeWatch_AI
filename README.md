@@ -189,6 +189,7 @@ JSON은 생성·로컬 큐 적재까지만 되고 클립은 항상 비어 있다
 | `default.yaml` | 공통 기본값 |
 | `dev.yaml` | PC 개발용 (고해상도, 매 프레임 검출) |
 | `pi5.yaml` | Pi5 실기기용 (저해상도, 검출 주기 분리) |
+| `pi5_ufld.yaml` | Pi5 + 차선 딥러닝(UFLD) 시험용 — `pi5.yaml` 상속, 1280×720·`lane.method: ufld` (docs/hw-handoff-guide.md 2.5) |
 
 주요 설정 항목
 

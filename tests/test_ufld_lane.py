@@ -325,3 +325,17 @@ def test_export_rows_only_matches_full_model_and_runs_in_detector(tmp_path):
     det = UFLDLaneDetector(cfg, backend=OnnxUFLDBackend(path))
     lane = det.detect(IMAGE, timestamp=0.0)
     assert lane.space == "image" and lane.reject_reason is not None   # 무작위 가중치 — 보류되면 정상
+
+
+def test_pi5_ufld_config_selects_ufld_with_16_9_input():
+    """Pi 시험용 설정 — pi5.yaml을 상속하되 차선은 UFLD, 입력은 학습 화면과 같은 16:9 (hw-handoff-guide 2.5)."""
+    from pathlib import Path
+
+    from src.utils.config import load_config
+
+    cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "pi5_ufld.yaml")
+    assert cfg.lane.method == "ufld"
+    assert cfg.lane.ufld.model_path == "data/models/ufld_aihub_aug.onnx"
+    w, h = cfg.input.resolution
+    assert abs(w / h - 16 / 9) < 1e-6
+    assert cfg.detection.weights == load_config(Path(__file__).resolve().parents[1] / "configs" / "pi5.yaml").detection.weights
