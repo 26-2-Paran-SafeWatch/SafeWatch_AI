@@ -3606,7 +3606,7 @@ print('═' * 112)
 
 
 # ============================== 25번 셀 ==============================
-# 25. 평가 세트 확대 + 모델 비교 — Validation 60_전방 전체(정답 v3 약 2,300장)로 사전학습 vs 재학습(1차·2차)
+# 25. 평가 세트 확대 + 모델 비교 — Validation 60_전방 전체(정답 v3 약 2,300장)로 사전학습 vs 재학습(1~3차)
 # 필요: 1번 셀만 (DRIVE_ROOT·VALID_DIR). 2~24번 셀 없이 혼자 돈다. GPU면 빠르고 CPU도 됨(수십 분)
 #
 # 왜: 지금까지 '검증 오답 0'은 257장 기준이었다(4번 셀이 OpenCV 보정용으로 시퀀스 절반을 떼어 놓고, 2번 셀이 2,000장만 뽑음).
@@ -3631,7 +3631,8 @@ BRANCH25 = 'feature/lane-ufld'
 UFLD25   = DRIVE_ROOT / 'ufld'
 MODELS25 = {'사전학습': UFLD25 / 'culane_res18.pth',
             '재학습':   UFLD25 / 'ufld_aihub_ft.pth',       # 1차 (26번 셀 첫 실행, 뒤집기·밝기만)
-            '재학습2':  UFLD25 / 'ufld_aihub_aug.pth'}      # 2차 (기하 증강 — 26번 셀 2026-11-08판)
+            '재학습2':  UFLD25 / 'ufld_aihub_aug.pth',     # 2차 (기하 증강 12에폭)
+            '재학습3':  UFLD25 / 'ufld_aihub_aug24.pth'}    # 3차 (기하 증강 24에폭)
 EVAL25   = Path('/content/lane_eval_v60')              # 세션 로컬
 BACKUP25 = DRIVE_ROOT / 'lane_eval_v60.tar'            # 드라이브 백업 — 다음엔 압축만 푼다
 MIS25    = '20200916'
@@ -3853,7 +3854,7 @@ for mis, tag in ((False, '검증'), (True, '틀어짐')):
         print(f'  {name} 범위 {CUTS25[-1]} 기본 전부: 정답 있는 {s["n"]}장 중 통과 {s["k"]}장 → 오답 0건이어도 오답률 상한 약 {ub}')
 
 # ── 큰 오답이 몰린 시퀀스 ──
-BEST25 = list(PRED25)[-1]                              # 있는 모델 중 가장 나중 것 (재학습2 > 재학습 > 사전학습)
+BEST25 = list(PRED25)[-1]                              # 있는 모델 중 가장 나중 것 (재학습3 > 재학습2 > 재학습 > 사전학습)
 CUT_SHOW25 = 0.68
 print(f'\n[{BEST25} · 범위 {CUT_SHOW25} · 기본 전부] 통과했는데 0.10 초과인 프레임이 있는 시퀀스')
 bad25 = []
@@ -3891,8 +3892,12 @@ print(f'\n[그림] 통과 오답 {len(bad25)}건 중 최대 {N_SHOW25}건')
 for r in bad25[:N_SHOW25]:
     show25(r, CUT_SHOW25, f'[25] {BEST25} 통과 오답')
 
+
 # ============================== 26번 셀 ==============================
-# 26. 재학습 (2차, 기하 증강) — AI Hub Training 차선(sl) 전체로 UFLDv2 파인튜닝
+# 26. 재학습 (3차, 기하 증강 24에폭) — AI Hub Training 차선(sl) 전체로 UFLDv2 파인튜닝
+# 3차 (2026-11-09): 2차(12에폭)는 끝까지 손실이 내려가 과적합이 없었다(학습 0.80 ≈ 선택용 0.82) → 에폭만 24로.
+#   데이터·증강·선택 방식은 2차와 같다. 결과는 ufld_aihub_aug24.pth — 2차 ufld_aihub_aug.pth는 비교용으로 그대로 둔다.
+#   A100 기준 약 75분(에폭당 3분), T4면 그 몇 배.
 # 필요: 1번 셀만 (DRIVE_ROOT·VALID_DIR). **GPU 런타임**. 2~25번 셀 없이 혼자 돈다.
 #
 # 2차에서 바뀐 것 (2026-11-08) — 1차(뒤집기·밝기만)는 검증은 좋아졌지만 장착이 다른 카메라(틀어짐)에서 나빠졌다
@@ -3915,7 +3920,7 @@ import os, sys, subprocess, zipfile, tarfile, shutil, time, json, re
 import unicodedata as ud
 from pathlib import Path
 
-MODE26    = 'test'                                   # 'test' → 'full'
+MODE26    = 'full'                                   # 'test' → 'full'
 REPO26    = Path('/content/SafeWatch_AI')
 BRANCH26  = 'feature/lane-ufld'
 SL26      = DRIVE_ROOT / '도로주행영상' / 'Training' / 'sl'
@@ -3924,8 +3929,10 @@ PRETRAIN26 = UFLD26 / 'culane_res18.pth'
 LOCAL26   = Path('/content/aihub26')                 # 라벨 zip 복사본 (작음)
 DATA26    = Path('/content/ufld_aihub2' if MODE26 == 'full' else '/content/ufld_aihub2_test')
 BACKUP26  = DRIVE_ROOT / 'ufld_aihub2.tar'           # 만든 학습 데이터 백업 (약 6GB, 형식 2)
-OUT26     = (UFLD26 / 'ufld_aihub_aug.pth') if MODE26 == 'full' else Path('/content/ufld_test/ufld_test.pth')
+OUT26     = (UFLD26 / 'ufld_aihub_aug24.pth') if MODE26 == 'full' else Path('/content/ufld_test/ufld_test.pth')
 LIMIT26   = 2000                                     # test: 데이터 장수 (학습 50스텝 × 배치 32가 나오게)
+EPOCHS26  = 24                                       # 설정 파일(12)을 덮어쓴다 — 코사인 학습률도 24에폭에 맞춰진다
+                                                     # 채택 모델은 2차(12에폭) — 2차를 다시 만들려면 12, OUT26을 ufld_aihub_aug.pth로
 STEPS26   = 50                                       # test: 학습 스텝
 CPU26     = os.cpu_count() or 2
 nfc26     = lambda s: ud.normalize('NFC', s)
@@ -4050,6 +4057,7 @@ if not PRETRAIN26.exists():
 import yaml
 tc26 = yaml.safe_load((REPO26 / 'configs/ufld_train.yaml').read_text())
 tc26['train']['num_workers'] = min(int(tc26['train']['num_workers']), CPU26)   # 코랩 CPU 수에 맞춤 (나머지 설정은 그대로)
+tc26['train']['epochs'] = EPOCHS26
 if MODE26 == 'test':
     tc26['train']['log_every'] = 10
 cfg26 = Path('/content/ufld_train_colab.yaml')
@@ -4109,5 +4117,247 @@ else:
         plt.plot(ep_, [h['val_aug_loss'] for h in hist], '^-', label='val (geometric aug, selection)')
     plt.plot(ep_[1:], [h['train_loss'] for h in hist[1:]], 's-', label='train')
     plt.xlabel('epoch (0 = CULane pretrained)'); plt.ylabel('loss'); plt.legend(); plt.grid(alpha=.3)
-    plt.title('26. fine-tuning loss (2nd, geometric aug)'); plt.show()
+    plt.title(f'26. fine-tuning loss (3rd, geometric aug, {EPOCHS26} epochs)'); plt.show()
     print('═' * 100)
+
+
+# ============================== 27번 셀 ==============================
+# 27. 옆 차로 평가 — 모델의 바깥 차선(0·3번)을 직접 쓰는 것 vs 지금 방식(자차 차로 폭 연장)
+# ⚠️ v1 결과는 무효 (2026-11-09): 라벨의 '옆 차선'에 이중선·도류대·갓길(옆 폭이 자차의 0.6배 미만, Validation 20%)이 섞여
+#    정답 옆 차로 폭이 아주 작아지고 오차가 5~8배로 튐 → 정답 폭 검사를 넣은 v2로 다시 잰다.
+# 필요: **25번 셀을 같은 세션에서 먼저 실행** (FR25·RES25·MODELS25·SPEC25 등을 그대로 쓴다)
+#
+# 왜: 모델은 차선 4개 [왼쪽 옆, 자차 좌, 자차 우, 오른쪽 옆]을 내지만 실행 코드는 자차 좌·우(1·2번)만 쓴다.
+#     옆 차로 차량은 src/metrics/offset.py가 자차 차로 폭을 바깥으로 한 칸 연장해 위치를 잰다(r ≈ ±1).
+#     곡선·차로 폭이 다른 구간에서는 연장이 틀릴 수 있다 → 실제 0·3번 출력이 더 나은지 먼저 잰다.
+#
+# 비교하는 옆 차로 중심 (측정 구간의 각 행에서)
+#   · 연장   = 자차 좌 L, 우 R로 추정 — 왼쪽 옆 = L − (R − L)/2,  오른쪽 옆 = R + (R − L)/2   (지금 코드)
+#   · 직접   = 모델 출력 — 왼쪽 옆 = (0번 + 1번)/2,  오른쪽 옆 = (2번 + 3번)/2
+#   · 직접+연장 = 직접이 측정 행 5개 미만이면 연장으로 대신 (실제로 넣는다면 이 형태)
+#   오차 = |예측 옆 차로 중심 − 정답 옆 차로 중심| / 정답 옆 차로 폭, 측정 행들 중 최대값 (25번과 같은 정의)
+#
+# 대상 프레임 = 25번 '기본 전부' 안전장치를 자차 차로가 통과했고(실행 코드가 차로를 쓰는 프레임),
+#              정답에 그쪽 옆 차선이 있는 프레임. 정답에 옆 차선이 없는데(라벨 없음 또는 실제로 없음) 모델이
+#              옆 차선을 낸 경우는 따로 센다 — 정답이 없으니 오답인지는 판단 못 함, 참고용.
+import time
+from collections import Counter
+import numpy as np, cv2, torch
+import matplotlib.pyplot as plt
+
+if 'RES25' not in globals():
+    raise SystemExit('25번 셀을 이 세션에서 먼저 실행하세요 (FR25·RES25를 쓴다)')
+
+MIN_ROWS27 = 5
+SIDES27 = (('왼쪽', 0, 1, -1), ('오른쪽', 3, 2, +1))       # (이름, 바깥 차선 번호, 자차 쪽 차선 번호, 방향)
+N_SHOW27 = 4
+
+
+# ── 추론: 차선 4개 전부 (25번 PRED25는 1·2번만 저장) ──
+@torch.no_grad()
+def infer27(path):
+    net = UFLDv2RowNet(SPEC25, grid_col=100, num_col=81, fc_norm=True)
+    load_weights(net, path)
+    net.keep_rows_only()
+    net = net.eval().to(DEV25)
+    out, t0 = {}, time.time()
+    for i in range(0, len(FR25), BS25):
+        batch = FR25[i:i + BS25]
+        imgs = [cv2.imread(str(f['ip'])) for f in batch]
+        x = torch.from_numpy(np.concatenate([preprocess(b, SPEC25) for b in imgs])).to(DEV25)
+        loc, ex = net(x)
+        loc, ex = loc.float().cpu().numpy(), ex.float().cpu().numpy()
+        for j, (f, b) in enumerate(zip(batch, imgs)):
+            h, w = b.shape[:2]
+            out[f['key']] = (decode_rows(loc[j], ex[j], SPEC25, w, h), w, h)
+    print(f'  {path.name}: {len(out)}장 {time.time() - t0:.0f}초')
+    del net
+    if DEV25 == 'cuda':
+        torch.cuda.empty_cache()
+    return out
+
+
+if 'PRED27' not in globals():
+    PRED27 = {}
+for name in PRED25:
+    if name not in PRED27:
+        PRED27[name] = infer27(MODELS25[name])
+
+
+# ── 오차 ──
+def xa27(pts, y):
+    return x_at(pts, y) if len(pts) >= 2 else None
+
+
+def adj_err27(f, lanes, w, cut, outer, inner, sgn):
+    """옆 차로 하나 → dict(ext=연장 오차, dir=직접 오차) — 각각 측정 행 5개 미만이면 None. 정답 행이 5개 미만이면 None"""
+    q_out, q_in = f['l4'][outer], f['l4'][inner]
+    s = w / f['W']
+    gt = []
+    for y in np.linspace(cut * f['H'], BOT25 * f['H'], 12):
+        a, b = x_at(q_out[3], y), x_at(q_in[3], y)
+        if a is not None and b is not None and abs(a - b) > 1:
+            gt.append((y * s, a * s, b * s))
+    if len(gt) < MIN_ROWS27:
+        return None
+    L, R = lanes[1], lanes[2]
+    e_ext, e_dir = [], []
+    for y, go, gi in gt:
+        gc, gw = (go + gi) / 2, abs(go - gi)
+        l, r = xa27(L, y), xa27(R, y)
+        if l is not None and r is not None:
+            pc = (l - (r - l) / 2) if sgn < 0 else (r + (r - l) / 2)
+            e_ext.append(abs(pc - gc) / gw)
+        o, i = xa27(lanes[outer], y), xa27(lanes[inner], y)
+        if o is not None and i is not None:
+            e_dir.append(abs((o + i) / 2 - gc) / gw)
+    return dict(ext=max(e_ext) if len(e_ext) >= MIN_ROWS27 else None,
+                dir=max(e_dir) if len(e_dir) >= MIN_ROWS27 else None)
+
+
+def pred_rows27(lanes, outer, h, cut):
+    p = lanes[outer]
+    return int(((p[:, 1] >= cut * h) & (p[:, 1] <= BOT25 * h)).sum()) if len(p) else 0
+
+
+RES27 = {}
+for name in PRED25:
+    for cut in CUTS25:
+        for mis in (False, True):
+            ok = {r['f']['key']: r['ok'] for r in RES25[(name, cut, False, mis)]}
+            rows = []
+            for f in FR25:
+                if f['mis'] != mis or not ok.get(f['key']):
+                    continue
+                lanes, w, h = PRED27[name][f['key']]
+                for side, outer, inner, sgn in SIDES27:
+                    if f['l4'][outer] is None:
+                        rows.append(dict(f=f, side=side, gt=False,
+                                         extra=pred_rows27(lanes, outer, h, cut) >= MIN_ROWS27))
+                        continue
+                    e = adj_err27(f, lanes, w, cut, outer, inner, sgn)
+                    if e is not None:
+                        rows.append(dict(f=f, side=side, gt=True, **e))
+            RES27[(name, cut, mis)] = rows
+
+
+def stat27(rows, kind):
+    rs = [r for r in rows if r['gt'] and r['ext'] is not None]
+    if kind == 'ext':
+        e = [r['ext'] for r in rs]
+    elif kind == 'dir':
+        e = [r['dir'] for r in rs if r['dir'] is not None]
+    else:
+        e = [r['dir'] if r['dir'] is not None else r['ext'] for r in rs]
+    e = np.array(e)
+    return dict(n=len(rs), k=len(e), c=[int((e > t).sum()) for t in ERR25],
+                med=float(np.median(e)) if len(e) else float('nan'))
+
+
+print('\n' + '═' * 118)
+print('칸 = 측정 장수(옆 차로 수) · 오차 중앙값 · 0.10/0.15/0.25 초과 건수     (자차 안전장치 "기본 전부" 통과 + 정답에 옆 차선 있는 경우)')
+print('직접의 장수가 적으면 = 모델이 그쪽 바깥 차선을 측정 구간에서 5행 이상 내지 않은 경우가 그만큼 있다는 뜻')
+print('═' * 118)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"모델":<8}{"방식":<10}' + ''.join(f'{"범위 " + str(c):>26}' for c in CUTS25))
+    for name in PRED25:
+        for kind, kname in (('ext', '연장(지금)'), ('dir', '직접'), ('mix', '직접+연장')):
+            cells = []
+            for cut in CUTS25:
+                s = stat27(RES27[(name, cut, mis)], kind)
+                cells.append(f'{s["k"]:>4}장 {s["med"]:.3f} {s["c"][0]:>3}/{s["c"][1]:>3}/{s["c"][2]:>3}')
+            print(f'  {name:<8}{kname:<10}' + ''.join(f'{c:>26}' for c in cells))
+    for name in PRED25:
+        rs = RES27[(name, CUTS25[-1], mis)]
+        no_gt = [r for r in rs if not r['gt']]
+        by_side = Counter(r['side'] for r in rs if r['gt'] and r['ext'] is not None)
+        print(f'  {name} 범위 {CUTS25[-1]}: 옆 차로 정답 있음 {dict(by_side)} · 정답에 옆 차선 없음 {len(no_gt)}건 중 '
+              f'모델이 바깥 차선을 냄 {sum(r["extra"] for r in no_gt)}건 (참고)')
+
+# ── 오차 큰 장면 ──
+BEST27 = list(PRED25)[-1]                              # 25번과 같은 모델 (가장 나중 것)
+CUT_SHOW27 = 0.68
+pool = [r for mis in (False, True) for r in RES27[(BEST27, CUT_SHOW27, mis)] if r['gt'] and r['ext'] is not None]
+worst_dir = sorted([r for r in pool if r['dir'] is not None and r['dir'] > ERR25[0]], key=lambda r: -r['dir'])
+worst_ext = sorted([r for r in pool if r['ext'] > ERR25[0]], key=lambda r: -r['ext'])
+
+
+def show27(r, title):
+    f = r['f']
+    bgr = cv2.imread(str(f['ip'])); vis = bgr.copy()
+    s = bgr.shape[1] / f['W']
+    for q in f['l4']:
+        if q is not None:
+            p = np.int32([(x * s, y * s) for x, y in sorted(q[3], key=lambda t: t[1])])
+            cv2.polylines(vis, [p], False, (200, 200, 200), 3)
+    lanes, w, h = PRED27[BEST27][f['key']]
+    for pts, col in zip(lanes, ((255, 0, 255), (0, 0, 255), (0, 255, 0), (255, 128, 0))):
+        for x, y in pts:
+            cv2.circle(vis, (int(x), int(y)), 4, col, -1)
+    L, R = lanes[1], lanes[2]
+    sgn = -1 if r['side'] == '왼쪽' else 1
+    for y in np.linspace(CUT_SHOW27 * h, BOT25 * h, 12):          # 연장으로 만든 바깥 선 (노란 x)
+        l, rr = xa27(L, y), xa27(R, y)
+        if l is not None and rr is not None:
+            x = l - (rr - l) if sgn < 0 else rr + (rr - l)
+            cv2.drawMarker(vis, (int(x), int(y)), (0, 255, 255), cv2.MARKER_TILTED_CROSS, 14, 2)
+    cv2.line(vis, (0, int(CUT_SHOW27 * h)), (int(w), int(CUT_SHOW27 * h)), (0, 255, 255), 2)
+    plt.figure(figsize=(12, 6.5)); plt.imshow(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)); plt.axis('off')
+    d = '-' if r['dir'] is None else f"{r['dir']:.3f}"
+    plt.title(f'{title} — {f["key"]} {r["side"]} 옆 차로  연장 {r["ext"]:.3f} · 직접 {d}\n'
+              'gray = label  magenta/blue = pred lane 0/3 (outer)  red·green = pred ego  yellow x = extension (current)', fontsize=9)
+    plt.show()
+
+
+print(f'\n[{BEST27} · 범위 {CUT_SHOW27}] 직접 오차 0.10 초과 {len(worst_dir)}건 · 연장 오차 0.10 초과 {len(worst_ext)}건')
+for r in worst_dir[:N_SHOW27 // 2]:
+    show27(r, '[27] 직접이 틀린 장면')
+for r in worst_ext[:N_SHOW27 // 2]:
+    show27(r, '[27] 연장이 틀린 장면')
+
+
+# ============================== 28번 셀 ==============================
+# 28. Pi용 ONNX 내보내기 — 2차 재학습 모델(ufld_aihub_aug.pth) → 드라이브 SafeWatch/ufld/ufld_aihub_aug.onnx
+# 필요: 1번 셀만 (DRIVE_ROOT). GPU 필요 없음(CPU로 1~2분).
+#
+# 왜 2차인가: 25번 셀 비교에서 틀어짐(장착이 다른 카메라) 범위 0.68 '기본 전부'를 유일하게 2단계 기준으로 통과(1/0/0).
+#   3차(24에폭)는 검증만 조금 낫고 틀어짐은 2/1/1로 나빠져 채택 안 함 (2026-11-09).
+# 하는 일: 저장소 scripts/export_ufld_onnx.py 그대로 실행 — 열 방향 출력을 잘라 행 방향만 남기고(실행 코드가 쓰는 것만),
+#   --verify로 PyTorch와 ONNX 출력 차이를 확인한다. 차이가 1e-3을 넘으면 실패로 멈춘다.
+# 결과: 드라이브 ufld/ufld_aihub_aug.onnx (약 550MB — 파라미터 1.39억 개 × 4바이트) — Pi5에서는 data/models/ufld_aihub_aug.onnx로 두고
+#   configs/pi5_ufld.yaml로 실행한다 (docs/hw-handoff-guide.md 2.5절). 아래 SHA-256을 Pi에서 받은 파일과 비교하면 된다.
+import sys, subprocess, hashlib
+from pathlib import Path
+
+REPO28   = Path('/content/SafeWatch_AI')
+BRANCH28 = 'feature/lane-ufld'
+SRC28    = DRIVE_ROOT / 'ufld' / 'ufld_aihub_aug.pth'
+OUT28    = DRIVE_ROOT / 'ufld' / 'ufld_aihub_aug.onnx'
+
+if not SRC28.exists():
+    raise SystemExit(f'{SRC28} 없음 — 26번 셀(2차) 결과 파일')
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'onnx', 'onnxruntime'], check=True)
+
+# ── 저장소 (25·26번과 같은 방식) ──
+if not REPO28.exists():
+    subprocess.run(['git', 'clone', '-q', '-b', BRANCH28,
+                    'https://github.com/26-2-Paran-SafeWatch/SafeWatch_AI.git', str(REPO28)], check=True)
+else:
+    for cmd in (['fetch', '-q', 'origin', BRANCH28], ['checkout', '-q', BRANCH28], ['reset', '-q', '--hard', f'origin/{BRANCH28}']):
+        subprocess.run(['git', '-C', str(REPO28), *cmd], check=True)
+print('저장소:', subprocess.run(['git', '-C', str(REPO28), 'log', '-1', '--oneline'], capture_output=True, text=True).stdout.strip())
+
+tmp28 = Path('/content') / OUT28.name                  # 로컬에 먼저 만들고 다 되면 드라이브로 복사 (중간에 끊겨도 반쪽 파일이 안 남게)
+p = subprocess.run([sys.executable, '-m', 'scripts.export_ufld_onnx', '--weights', str(SRC28), '--output', str(tmp28),
+                    '--config', 'configs/default.yaml', '--verify'], cwd=REPO28, capture_output=True, text=True)
+print(p.stdout + p.stderr)
+if p.returncode != 0:
+    raise SystemExit('변환 실패 — 위 출력 확인')
+
+import shutil
+shutil.copy(tmp28, OUT28)
+h = hashlib.sha256(OUT28.read_bytes()).hexdigest()
+print(f'드라이브 저장: {OUT28} ({OUT28.stat().st_size / 1e6:.0f}MB)')
+print(f'SHA-256: {h}')
+print('→ 드라이브에서 이 파일을 공유 링크로 넘기고, Pi5에서는 data/models/ufld_aihub_aug.onnx 로 둔다')
