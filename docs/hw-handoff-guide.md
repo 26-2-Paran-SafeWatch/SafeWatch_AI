@@ -102,11 +102,11 @@ python -m src.main --config configs/pi5.yaml --source camera
 AI Hub 학습 데이터로 재학습한 모델이 나와서 Pi5에서 시험할 수 있다. **아직 시험 단계**라
 기본 설정(`pi5.yaml`)은 그대로 OpenCV이고, 아래 별도 설정으로만 켠다.
 
-1. **브랜치** — UFLD 코드는 아직 `feature/lane-ufld`에만 있다(dev·main 미병합).
+1. **브랜치** — UFLD 코드는 `dev`에 있다(2026-11-09 병합, main 미병합). Pi가 `main`이면 `dev`로 바꾼다.
 
    ```bash
    git fetch origin
-   git checkout feature/lane-ufld
+   git checkout dev
    git pull
    ```
 
