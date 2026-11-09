@@ -40,6 +40,10 @@ class LabelRules:
     double: float = 0.08        # 19번 DOUBLE19 겹선 — 아래끝 x 간격이 화면 폭의 이 비율 미만이면 한 경계
     width_min: float = 0.25     # 19번 WMIN19 자차 차로 폭 (아래끝 행, 화면 폭 대비)
     width_max: float = 0.95     # 19번 WMAX19
+    # 옆 차선 폭 검사 (2026-11-09, 노트북 27번 v2 ADJ_RATIO27) — 옆 차로 폭 ÷ 자차 차로 폭(같은 행 중앙값)이 이 범위
+    # 밖이면 그 옆 차선은 이중선·도류대·갓길 선으로 보고 뺀다. 라벨 분포: Training 84%가 0.8~1.25, 12%가 0.6 미만
+    adj_ratio_min: float = 0.6
+    adj_ratio_max: float = 1.6
 
 
 _VERSION = re.compile(r"_v\d+_\d+$")
@@ -175,6 +179,30 @@ def ego_lanes(lanes: list[Line], W: float, H: float, rules: LabelRules = LabelRu
     if not (rules.width_min <= (cl[r][0] - cl[l][0]) / W <= rules.width_max):
         return None
     return [cl[l - 1] if l > 0 else None, cl[l], cl[r], cl[r + 1] if r + 1 < len(cl) else None]
+
+
+def drop_false_adjacent(l4: list[Cand | None], W: float, H: float,
+                        rules: LabelRules = LabelRules()) -> tuple[list[Cand | None], int]:
+    """옆 차선(0·3번) 중 옆 차로 폭이 자차 차로 폭과 너무 다른 것을 None으로 바꾼다 → (새 l4, 뺀 개수).
+
+    라벨의 옆 차선은 '자차 차선 바로 바깥 선'이라 이중선 사이·도류대·갓길 선이 자주 잡힌다(옆 차로가 아주 좁음).
+    판정 구간(band_top~band_bottom) 12행에서 옆 폭 ÷ 자차 폭의 중앙값으로 본다. 세 선이 함께 있는 행이
+    3개 미만이면 판단하지 않고 둔다. 자차 차선(1·2번)은 건드리지 않는다.
+    """
+    out, dropped = list(l4), 0
+    ys = np.linspace(rules.band_top * H, rules.band_bottom * H, 12)
+    for outer, inner, other in ((0, 1, 2), (3, 2, 1)):
+        if l4[outer] is None:
+            continue
+        rs = []
+        for y in ys:
+            a, b, c = x_at(l4[outer][3], y), x_at(l4[inner][3], y), x_at(l4[other][3], y)
+            if a is not None and b is not None and c is not None and abs(b - c) > 1:
+                rs.append(abs(a - b) / abs(b - c))
+        if len(rs) >= 3 and not (rules.adj_ratio_min <= float(np.median(rs)) <= rules.adj_ratio_max):
+            out[outer] = None
+            dropped += 1
+    return out, dropped
 
 
 def row_labels(l4: list[Cand | None], W: float, H: float, grid: int, anchors: np.ndarray,

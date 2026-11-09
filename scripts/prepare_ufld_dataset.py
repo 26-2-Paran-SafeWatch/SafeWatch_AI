@@ -16,6 +16,8 @@
    `configs/ufld_train.yaml`의 data.exclude_dates 날짜도 통째로 뺀다.
 2. 라벨 XML(설정 화각만, 같은 프레임의 여러 버전은 이름순 마지막 것)을 정답 v3로 바꾼다 (scripts/ufld_labels.py).
    자차 차로 좌·우가 없거나 폭이 이상한 프레임은 뺀다 — '차선 없음'을 잘못 배우지 않게(노트북 18·19번과 같음).
+   옆 차선(0·3번)은 옆 차로 폭이 자차 차로 폭의 0.6~1.6배 밖이면 그 선만 뺀다 — 이중선·도류대·갓길 선을
+   옆 차선으로 배우지 않게 (2026-11-09, 노트북 27번 v2 / `drop_false_adjacent`).
 3. 이미지를 실행 경로와 같은 방식(src/lane/ufld.py preprocess)으로 모델 입력 폭에 맞춰 줄이되 **자르지 않고**
    (1600×533) JPEG로 저장한다. 학습 때 이동·회전·확대(기하 증강)를 한 뒤 아래 320행을 자른다 — 미리 자르면
    위로 밀거나 돌릴 때 잘려 나간 부분을 되살릴 수 없다 (2026-11-08, 형식 2).
@@ -42,7 +44,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scripts.ufld_labels import LabelRules, ego_lanes, frame_key, lane_polylines, parse_lanes, row_labels, sequence_of
+from scripts.ufld_labels import (LabelRules, drop_false_adjacent, ego_lanes, frame_key, lane_polylines, parse_lanes,
+                                 row_labels, sequence_of)
 from src.lane.ufld import UFLDSpec
 from src.utils.config import load_config
 
@@ -162,6 +165,8 @@ def main() -> None:
             if l4 is None:
                 skip["자차 쌍 없음/폭 이상"] += 1
                 continue
+            l4, nd = drop_false_adjacent(l4, W, H, rules)
+            skip["옆 차선 폭 이상으로 뺀 옆 차선(프레임은 유지)"] += nd
             recs.append(dict(key=key, seq=sequence_of(key),
                              rows=row_labels(l4, W, H, spec.grid_num, anchors).astype(np.int16),
                              rows_flip=row_labels(l4, W, H, spec.grid_num, anchors, flip=True).astype(np.int16),

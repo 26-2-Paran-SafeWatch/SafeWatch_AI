@@ -291,3 +291,26 @@ def test_loss_matches_notebook_definition():
                                      lab[valid].float()))
     assert torch.allclose(ufld_loss(loc, ex, lab, 0.05), ref)
     assert torch.isfinite(ufld_loss(loc, ex, torch.full_like(lab, -1), 0.05))   # 차선 없는 배치
+
+
+def test_drop_false_adjacent_removes_narrow_outer_lane_only():
+    """옆 차로 폭이 자차의 0.6~1.6배 밖인 옆 차선만 뺀다 — 자차 차선과 정상 옆 차선은 그대로 (27번 v2)."""
+    from scripts.ufld_labels import drop_false_adjacent
+
+    l4 = ego_lanes(_road(), W, H)
+    kept, n = drop_false_adjacent(l4, W, H)
+    assert n == 0 and kept == l4                                   # 정상 도로: 옆 폭 = 자차 폭
+
+    def line(xb):
+        return lambda y: 960 + (xb - 960) * (y - 500) / (1060 - 500)
+    near = line(960 + 400 + 220)                                    # 자차 오른선 바깥 220px — 겹선 기준(154px)보다 멀고 차로로는 좁음
+    road = [ln for ln in _road() if not (ln[0] == "Lane_White_Solid" and ln[1][-1][0] > 1500)]
+    road.append(("Lane_White_Solid", [(near(y), y) for y in (560, 800, 1060)]))
+    l4 = ego_lanes(road, W, H)
+    assert l4[3] is not None
+    out, n = drop_false_adjacent(l4, W, H)
+    assert n == 1 and out[3] is None
+    assert out[:3] == l4[:3]
+
+    loose = LabelRules(adj_ratio_min=0.1)                           # 규칙 값을 바꾸면 남는다
+    assert drop_false_adjacent(l4, W, H, loose)[1] == 0
