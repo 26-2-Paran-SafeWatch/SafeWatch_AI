@@ -3606,7 +3606,7 @@ print('═' * 112)
 
 
 # ============================== 25번 셀 ==============================
-# 25. 평가 세트 확대 + 모델 비교 — Validation 60_전방 전체(정답 v3 약 2,300장)로 사전학습 vs 재학습(1~3차)
+# 25. 평가 세트 확대 + 모델 비교 — Validation 60_전방 전체(정답 v3 약 2,300장)로 사전학습 vs 재학습(1~4차)
 # 필요: 1번 셀만 (DRIVE_ROOT·VALID_DIR). 2~24번 셀 없이 혼자 돈다. GPU면 빠르고 CPU도 됨(수십 분)
 #
 # 왜: 지금까지 '검증 오답 0'은 257장 기준이었다(4번 셀이 OpenCV 보정용으로 시퀀스 절반을 떼어 놓고, 2번 셀이 2,000장만 뽑음).
@@ -3632,7 +3632,8 @@ UFLD25   = DRIVE_ROOT / 'ufld'
 MODELS25 = {'사전학습': UFLD25 / 'culane_res18.pth',
             '재학습':   UFLD25 / 'ufld_aihub_ft.pth',       # 1차 (26번 셀 첫 실행, 뒤집기·밝기만)
             '재학습2':  UFLD25 / 'ufld_aihub_aug.pth',     # 2차 (기하 증강 12에폭)
-            '재학습3':  UFLD25 / 'ufld_aihub_aug24.pth'}    # 3차 (기하 증강 24에폭)
+            '재학습3':  UFLD25 / 'ufld_aihub_aug24.pth',   # 3차 (기하 증강 24에폭)
+            '재학습4':  UFLD25 / 'ufld_aihub_clean.pth'}   # 4차 (2차 + 가짜 옆 차선 라벨 정리)
 EVAL25   = Path('/content/lane_eval_v60')              # 세션 로컬
 BACKUP25 = DRIVE_ROOT / 'lane_eval_v60.tar'            # 드라이브 백업 — 다음엔 압축만 푼다
 MIS25    = '20200916'
@@ -3854,7 +3855,7 @@ for mis, tag in ((False, '검증'), (True, '틀어짐')):
         print(f'  {name} 범위 {CUTS25[-1]} 기본 전부: 정답 있는 {s["n"]}장 중 통과 {s["k"]}장 → 오답 0건이어도 오답률 상한 약 {ub}')
 
 # ── 큰 오답이 몰린 시퀀스 ──
-BEST25 = list(PRED25)[-1]                              # 있는 모델 중 가장 나중 것 (재학습3 > 재학습2 > 재학습 > 사전학습)
+BEST25 = list(PRED25)[-1]                              # 있는 모델 중 가장 나중 것 (재학습4 > 재학습3 > …)
 CUT_SHOW25 = 0.68
 print(f'\n[{BEST25} · 범위 {CUT_SHOW25} · 기본 전부] 통과했는데 0.10 초과인 프레임이 있는 시퀀스')
 bad25 = []
@@ -3894,10 +3895,12 @@ for r in bad25[:N_SHOW25]:
 
 
 # ============================== 26번 셀 ==============================
-# 26. 재학습 (3차, 기하 증강 24에폭) — AI Hub Training 차선(sl) 전체로 UFLDv2 파인튜닝
-# 3차 (2026-11-09): 2차(12에폭)는 끝까지 손실이 내려가 과적합이 없었다(학습 0.80 ≈ 선택용 0.82) → 에폭만 24로.
-#   데이터·증강·선택 방식은 2차와 같다. 결과는 ufld_aihub_aug24.pth — 2차 ufld_aihub_aug.pth는 비교용으로 그대로 둔다.
-#   A100 기준 약 75분(에폭당 3분), T4면 그 몇 배.
+# 26. 재학습 (4차, 옆 차선 라벨 정리) — AI Hub Training 차선(sl) 전체로 UFLDv2 파인튜닝
+# 4차 (2026-11-09): 27번 v2에서 재학습 모델이 라벨의 가짜 옆 차선(이중선·도류대·갓길)을 배운 것을 확인 →
+#   데이터 만들 때 옆 차로 폭이 자차 차로 폭의 0.6~1.6배 밖인 옆 차선(0·3번) 라벨을 뺀다(약 11%, 자차 차선은 그대로).
+#   그 외는 채택 모델인 2차와 같다(기하 증강·12에폭). 라벨이 바뀌어 데이터를 새로 만든다(ufld_aihub3, 약 5분).
+#   결과는 ufld_aihub_clean.pth — 2차 ufld_aihub_aug.pth는 비교용으로 그대로 둔다. A100 기준 약 45분.
+# 3차 (2026-11-09): 에폭만 24로 → 검증은 조금 낫고 틀어짐은 나빠져 채택 안 함.
 # 필요: 1번 셀만 (DRIVE_ROOT·VALID_DIR). **GPU 런타임**. 2~25번 셀 없이 혼자 돈다.
 #
 # 2차에서 바뀐 것 (2026-11-08) — 1차(뒤집기·밝기만)는 검증은 좋아졌지만 장착이 다른 카메라(틀어짐)에서 나빠졌다
@@ -3927,12 +3930,11 @@ SL26      = DRIVE_ROOT / '도로주행영상' / 'Training' / 'sl'
 UFLD26    = DRIVE_ROOT / 'ufld'
 PRETRAIN26 = UFLD26 / 'culane_res18.pth'
 LOCAL26   = Path('/content/aihub26')                 # 라벨 zip 복사본 (작음)
-DATA26    = Path('/content/ufld_aihub2' if MODE26 == 'full' else '/content/ufld_aihub2_test')
-BACKUP26  = DRIVE_ROOT / 'ufld_aihub2.tar'           # 만든 학습 데이터 백업 (약 6GB, 형식 2)
-OUT26     = (UFLD26 / 'ufld_aihub_aug24.pth') if MODE26 == 'full' else Path('/content/ufld_test/ufld_test.pth')
+DATA26    = Path('/content/ufld_aihub3' if MODE26 == 'full' else '/content/ufld_aihub3_test')
+BACKUP26  = DRIVE_ROOT / 'ufld_aihub3.tar'           # 만든 학습 데이터 백업 (약 6GB, 형식 2 + 옆 차선 정리)
+OUT26     = (UFLD26 / 'ufld_aihub_clean.pth') if MODE26 == 'full' else Path('/content/ufld_test/ufld_test.pth')
 LIMIT26   = 2000                                     # test: 데이터 장수 (학습 50스텝 × 배치 32가 나오게)
-EPOCHS26  = 24                                       # 설정 파일(12)을 덮어쓴다 — 코사인 학습률도 24에폭에 맞춰진다
-                                                     # 채택 모델은 2차(12에폭) — 2차를 다시 만들려면 12, OUT26을 ufld_aihub_aug.pth로
+EPOCHS26  = 12                                       # 설정 파일 값을 덮어쓴다(3차는 24) — 코사인 학습률도 여기에 맞춰진다
 STEPS26   = 50                                       # test: 학습 스텝
 CPU26     = os.cpu_count() or 2
 nfc26     = lambda s: ud.normalize('NFC', s)
@@ -4048,6 +4050,9 @@ else:
 man26 = json.loads((DATA26 / 'manifest.json').read_text())
 if man26.get('format') != 2:
     raise SystemExit(f'{DATA26}는 옛 형식(잘린 사진) — 폴더를 지우고 다시 실행')
+if 'adj_ratio_min' not in man26.get('label_rules', {}):
+    raise SystemExit(f'{DATA26}는 옆 차선 정리 전 데이터 — 폴더(와 드라이브 {BACKUP26.name})를 지우고 다시 실행')
+print('  라벨 규칙:', {k: man26['label_rules'][k] for k in ('adj_ratio_min', 'adj_ratio_max')})
 print('  학습', man26['splits']['train'], '· 선택용', man26['splits']['val'])
 print('  제외', man26['skipped'])
 
@@ -4106,7 +4111,7 @@ else:
         va = '-' if h.get('val_aug_loss') is None else f"{h['val_aug_loss']:.4f}"
         print(f"{h['epoch']:>4} {tl:>10} {h['val_loss']:>11.4f} {va:>14} {h.get('sec', 0) / 60:>5.0f}" + ('  ← 최저' if h is best else ''))
     if OUT26.exists():
-        print(f'저장: {OUT26} — 이제 25번 셀을 돌리면 사전학습·1차와 같은 표로 비교된다')
+        print(f'저장: {OUT26} — 이제 25번 → 27번 셀을 돌리면 이전 모델들과 같은 표로 비교된다')
     else:
         print('어느 에폭도 사전학습보다 선택용 손실이 낮지 않아 저장 안 됨 → 결과를 보고 학습 설정을 다시 정한다')
     import matplotlib.pyplot as plt
@@ -4117,14 +4122,12 @@ else:
         plt.plot(ep_, [h['val_aug_loss'] for h in hist], '^-', label='val (geometric aug, selection)')
     plt.plot(ep_[1:], [h['train_loss'] for h in hist[1:]], 's-', label='train')
     plt.xlabel('epoch (0 = CULane pretrained)'); plt.ylabel('loss'); plt.legend(); plt.grid(alpha=.3)
-    plt.title(f'26. fine-tuning loss (3rd, geometric aug, {EPOCHS26} epochs)'); plt.show()
+    plt.title(f'26. fine-tuning loss (4th, cleaned adjacent labels, {EPOCHS26} epochs)'); plt.show()
     print('═' * 100)
 
 
 # ============================== 27번 셀 ==============================
 # 27. 옆 차로 평가 — 모델의 바깥 차선(0·3번)을 직접 쓰는 것 vs 지금 방식(자차 차로 폭 연장)
-# ⚠️ v1 결과는 무효 (2026-11-09): 라벨의 '옆 차선'에 이중선·도류대·갓길(옆 폭이 자차의 0.6배 미만, Validation 20%)이 섞여
-#    정답 옆 차로 폭이 아주 작아지고 오차가 5~8배로 튐 → 정답 폭 검사를 넣은 v2로 다시 잰다.
 # 필요: **25번 셀을 같은 세션에서 먼저 실행** (FR25·RES25·MODELS25·SPEC25 등을 그대로 쓴다)
 #
 # 왜: 모델은 차선 4개 [왼쪽 옆, 자차 좌, 자차 우, 오른쪽 옆]을 내지만 실행 코드는 자차 좌·우(1·2번)만 쓴다.
@@ -4140,6 +4143,11 @@ else:
 # 대상 프레임 = 25번 '기본 전부' 안전장치를 자차 차로가 통과했고(실행 코드가 차로를 쓰는 프레임),
 #              정답에 그쪽 옆 차선이 있는 프레임. 정답에 옆 차선이 없는데(라벨 없음 또는 실제로 없음) 모델이
 #              옆 차선을 낸 경우는 따로 센다 — 정답이 없으니 오답인지는 판단 못 함, 참고용.
+#
+# v2 (2026-11-09): 정답 옆 차로 폭 검사 추가. 라벨의 '옆 차선'은 자차 차선 바로 바깥 선이라, 이중선·도류대·갓길이면
+#     옆 차로가 아주 좁게 잡힌다(정답 폭이 작아 오차가 5~8배로 튐). 라벨 분포(옆 폭 ÷ 자차 폭, 같은 행)는
+#     Training 84% · Validation 75%가 0.8~1.25에 몰리고 0.6 미만이 12% · 20% → 0.6~1.6인 행만 정답으로 쓴다.
+#     (도로 규정 차로 폭 2.75~3.6m라 실제 차로끼리 비율은 0.76~1.31. 같은 행은 거리가 같아 화면 폭 비율 ≈ 실제 비율)
 import time
 from collections import Counter
 import numpy as np, cv2, torch
@@ -4149,7 +4157,8 @@ if 'RES25' not in globals():
     raise SystemExit('25번 셀을 이 세션에서 먼저 실행하세요 (FR25·RES25를 쓴다)')
 
 MIN_ROWS27 = 5
-SIDES27 = (('왼쪽', 0, 1, -1), ('오른쪽', 3, 2, +1))       # (이름, 바깥 차선 번호, 자차 쪽 차선 번호, 방향)
+ADJ_RATIO27 = (0.6, 1.6)                               # 정답 옆 차로 폭 ÷ 정답 자차 차로 폭 허용 범위
+SIDES27 = (('왼쪽', 0, 1, 2, -1), ('오른쪽', 3, 2, 1, +1))  # (이름, 바깥 차선, 자차 쪽 차선, 자차 반대쪽 차선, 방향)
 N_SHOW27 = 4
 
 
@@ -4189,17 +4198,21 @@ def xa27(pts, y):
     return x_at(pts, y) if len(pts) >= 2 else None
 
 
-def adj_err27(f, lanes, w, cut, outer, inner, sgn):
-    """옆 차로 하나 → dict(ext=연장 오차, dir=직접 오차) — 각각 측정 행 5개 미만이면 None. 정답 행이 5개 미만이면 None"""
-    q_out, q_in = f['l4'][outer], f['l4'][inner]
+def adj_err27(f, lanes, w, cut, outer, inner, other, sgn):
+    """옆 차로 하나 → dict(ext=연장 오차, dir=직접 오차) — 각각 측정 행 5개 미만이면 None.
+    정답 행이 5개 미만이면 'short', 폭 검사로 5개 미만이 되면 'narrow'(가짜 옆 차로)"""
+    q_out, q_in, q_oth = f['l4'][outer], f['l4'][inner], f['l4'][other]
     s = w / f['W']
-    gt = []
+    gt, n_all = [], 0
     for y in np.linspace(cut * f['H'], BOT25 * f['H'], 12):
-        a, b = x_at(q_out[3], y), x_at(q_in[3], y)
-        if a is not None and b is not None and abs(a - b) > 1:
+        a, b, c = x_at(q_out[3], y), x_at(q_in[3], y), x_at(q_oth[3], y)
+        if a is None or b is None or c is None or abs(b - c) <= 1:
+            continue
+        n_all += 1
+        if ADJ_RATIO27[0] <= abs(a - b) / abs(b - c) <= ADJ_RATIO27[1]:
             gt.append((y * s, a * s, b * s))
     if len(gt) < MIN_ROWS27:
-        return None
+        return 'narrow' if n_all >= MIN_ROWS27 else 'short'
     L, R = lanes[1], lanes[2]
     e_ext, e_dir = [], []
     for y, go, gi in gt:
@@ -4230,13 +4243,16 @@ for name in PRED25:
                 if f['mis'] != mis or not ok.get(f['key']):
                     continue
                 lanes, w, h = PRED27[name][f['key']]
-                for side, outer, inner, sgn in SIDES27:
+                for side, outer, inner, other, sgn in SIDES27:
                     if f['l4'][outer] is None:
                         rows.append(dict(f=f, side=side, gt=False,
                                          extra=pred_rows27(lanes, outer, h, cut) >= MIN_ROWS27))
                         continue
-                    e = adj_err27(f, lanes, w, cut, outer, inner, sgn)
-                    if e is not None:
+                    e = adj_err27(f, lanes, w, cut, outer, inner, other, sgn)
+                    if e == 'narrow':
+                        rows.append(dict(f=f, side=side, gt=False, narrow=True,
+                                         extra=pred_rows27(lanes, outer, h, cut) >= MIN_ROWS27))
+                    elif e != 'short':
                         rows.append(dict(f=f, side=side, gt=True, **e))
             RES27[(name, cut, mis)] = rows
 
@@ -4255,7 +4271,7 @@ def stat27(rows, kind):
 
 
 print('\n' + '═' * 118)
-print('칸 = 측정 장수(옆 차로 수) · 오차 중앙값 · 0.10/0.15/0.25 초과 건수     (자차 안전장치 "기본 전부" 통과 + 정답에 옆 차선 있는 경우)')
+print(f'칸 = 측정 장수(옆 차로 수) · 오차 중앙값 · 0.10/0.15/0.25 초과 건수     (자차 안전장치 "기본 전부" 통과 + 정답 옆 차로 폭이 자차의 {ADJ_RATIO27[0]}~{ADJ_RATIO27[1]}배)')
 print('직접의 장수가 적으면 = 모델이 그쪽 바깥 차선을 측정 구간에서 5행 이상 내지 않은 경우가 그만큼 있다는 뜻')
 print('═' * 118)
 for mis, tag in ((False, '검증'), (True, '틀어짐')):
@@ -4270,9 +4286,11 @@ for mis, tag in ((False, '검증'), (True, '틀어짐')):
             print(f'  {name:<8}{kname:<10}' + ''.join(f'{c:>26}' for c in cells))
     for name in PRED25:
         rs = RES27[(name, CUTS25[-1], mis)]
-        no_gt = [r for r in rs if not r['gt']]
+        no_gt = [r for r in rs if not r['gt'] and not r.get('narrow')]
+        nar = [r for r in rs if r.get('narrow')]
         by_side = Counter(r['side'] for r in rs if r['gt'] and r['ext'] is not None)
-        print(f'  {name} 범위 {CUTS25[-1]}: 옆 차로 정답 있음 {dict(by_side)} · 정답에 옆 차선 없음 {len(no_gt)}건 중 '
+        print(f'  {name} 범위 {CUTS25[-1]}: 옆 차로 정답 있음 {dict(by_side)} · 폭 검사로 뺀 가짜 옆 차로 {len(nar)}건'
+              f'(모델이 바깥 차선 냄 {sum(r["extra"] for r in nar)}) · 정답에 옆 차선 없음 {len(no_gt)}건 중 '
               f'모델이 바깥 차선을 냄 {sum(r["extra"] for r in no_gt)}건 (참고)')
 
 # ── 오차 큰 장면 ──
