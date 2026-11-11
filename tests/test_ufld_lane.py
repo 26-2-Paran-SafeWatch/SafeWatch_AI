@@ -161,7 +161,7 @@ def test_centered_road_becomes_valid_after_width_calibration():
     left, right = lane_at_row(lane.left_points, lane.right_points, y)
     assert left == pytest.approx(_road()[1](0.9) * IMG_W, abs=IMG_W / 199)
     assert right == pytest.approx(_road()[2](0.9) * IMG_W, abs=IMG_W / 199)
-    assert lane.measure_y_range == pytest.approx((0.68 * IMG_H, 0.98 * IMG_H))
+    assert lane.measure_y_range == pytest.approx((0.58 * IMG_H, 0.98 * IMG_H))
 
 
 def test_low_existence_in_measure_range_is_held():
@@ -170,6 +170,23 @@ def test_low_existence_in_measure_range_is_held():
     det, _ = _detector(short)
     lane = _run(det, 1)[0]
     assert not lane.valid and lane.reject_reason == "existence"
+
+
+def test_guard_judges_only_the_near_range_not_the_measure_range():
+    # 판정 구간(0.68~) 아래에만 선이 있고 측정 구간 위쪽(0.58~0.68)에는 없어도 통과한다
+    lanes = _road()
+    near_only = [lambda y, f=f: f(y) if y >= 0.68 else None for f in lanes]
+    det, _ = _detector(near_only)
+    out = _run(det, 20)
+    assert out[-1].valid
+    assert out[-1].measure_y_range == pytest.approx((0.58 * IMG_H, 0.98 * IMG_H))
+
+
+def test_measure_range_above_row_anchors_fails_at_startup():
+    cfg = _cfg()
+    cfg.to_dict()["lane"]["ufld"]["measure_range_ratio"] = [0.40, 0.98]   # 행 앵커 위끝 0.42보다 위
+    with pytest.raises(ValueError, match="measure_range_ratio"):
+        UFLDLaneDetector(cfg, FakeBackend(UFLDSpec.from_config(cfg.lane.ufld), _road()))
 
 
 def test_camera_outside_predicted_lane_is_held_as_straddle():

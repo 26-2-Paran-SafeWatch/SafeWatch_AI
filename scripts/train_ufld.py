@@ -15,6 +15,9 @@
   (train.select_by: aug) — 선택용 시퀀스도 학습과 같은 카메라 계열이라, 그대로 재면 카메라가 바뀌어도 버티는지가
   반영되지 않는다. 증강 없는 손실도 함께 기록한다.
   최종 판정은 이 스크립트가 아니라 노트북의 검증·틀어짐 평가(학습에서 뺀 시퀀스)로 한다.
+- 먼 행 가중 (2026-11-10, train.far_rows): 화면 위쪽(먼 곳) 행의 위치 손실에 가중치. 노트북 29번에서 차 바닥 0.58보다
+  먼 차의 offset 오차가 커서(0.10 초과 7~20%) 넣었다. 선택용 손실도 같은 가중치로 잰다(에폭 선택 = 학습 목표와 같게).
+  기본 1.0 = 끔 → 2차와 같은 학습.
 - 저장: `--out`에 최고 에폭 가중치를 원 저장소와 같은 형식({'model': state_dict})으로 저장한다 →
   노트북 `load_ufld`·`scripts/export_ufld_onnx.py --weights`가 그대로 연다.
   `--out`과 같은 폴더에 `*_last.pth`(이어 하기용), `*_history.json`(에폭별 손실)도 남긴다.
@@ -120,8 +123,13 @@ class UFLDDataset(Dataset):
         return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)), torch.from_numpy(np.ascontiguousarray(y))
 
 
-def ufld_loss(loc: torch.Tensor, exist: torch.Tensor, lab: torch.Tensor, mean_w: float) -> torch.Tensor:
-    """노트북 loss18. loc (B,G,n,L), exist (B,2,n,L), lab (B,n,L) — -1 = 차선 없음."""
+def ufld_loss(loc: torch.Tensor, exist: torch.Tensor, lab: torch.Tensor, mean_w: float,
+              row_w: torch.Tensor | None = None) -> torch.Tensor:
+    """노트북 loss18. loc (B,G,n,L), exist (B,2,n,L), lab (B,n,L) — -1 = 차선 없음.
+
+    row_w (n,) — 행마다 위치 손실(focal CE·평균 위치) 가중치. None이면 전부 1(노트북과 같음).
+    가중 평균이라 전부 같은 값이면 None과 같은 결과다. 존재 손실에는 걸지 않는다.
+    """
     loc, exist = loc.float(), exist.float()
     valid = lab >= 0
     l_ext = F.cross_entropy(exist, valid.long())
@@ -129,10 +137,23 @@ def ufld_loss(loc: torch.Tensor, exist: torch.Tensor, lab: torch.Tensor, mean_w:
         return l_ext
     logp = F.log_softmax(loc, 1)
     focal = (1 - logp.exp()) ** 2 * logp
-    l_cls = -(focal.gather(1, lab.clamp(min=0)[:, None]).squeeze(1))[valid].mean()
+    cls = -(focal.gather(1, lab.clamp(min=0)[:, None]).squeeze(1))[valid]
     grid = torch.arange(loc.shape[1], device=loc.device).view(1, -1, 1, 1)
-    l_mean = F.smooth_l1_loss((loc.softmax(1) * grid).sum(1)[valid], lab[valid].float())
-    return l_cls + l_ext + mean_w * l_mean
+    mean = F.smooth_l1_loss((loc.softmax(1) * grid).sum(1)[valid], lab[valid].float(), reduction="none")
+    if row_w is None:
+        return cls.mean() + l_ext + mean_w * mean.mean()
+    w = row_w.to(loc.device, torch.float32).view(1, -1, 1).expand_as(lab)[valid]
+    return (cls * w).sum() / w.sum() + l_ext + mean_w * (mean * w).sum() / w.sum()
+
+
+def far_row_weights(anchors: np.ndarray, far_cfg: Config | None) -> torch.Tensor | None:
+    """train.far_rows → 행 가중치. 행 앵커(화면 높이 비율)가 below보다 위(먼 쪽)인 행은 weight배. 1이면 None(끔)."""
+    if far_cfg is None or float(far_cfg.weight) == 1.0:
+        return None
+    if float(far_cfg.weight) <= 0:
+        raise SystemExit(f"train.far_rows.weight는 0보다 커야 합니다: {far_cfg.weight}")
+    a = np.asarray(anchors, np.float64)
+    return torch.from_numpy(np.where(a < float(far_cfg.below), float(far_cfg.weight), 1.0).astype(np.float32))
 
 
 def pick_device() -> str:
@@ -144,14 +165,15 @@ def pick_device() -> str:
 
 
 @torch.no_grad()
-def evaluate(net: UFLDv2RowNet, loader: DataLoader, dev: str, mean_w: float, amp: bool) -> float:
+def evaluate(net: UFLDv2RowNet, loader: DataLoader, dev: str, mean_w: float, amp: bool,
+             row_w: torch.Tensor | None = None) -> float:
     net.eval()
     tot, n = 0.0, 0
     for x, y in loader:
         x, y = x.to(dev, non_blocking=True), y.to(dev, non_blocking=True)
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
             loc, ex = net(x)
-        tot += float(ufld_loss(loc, ex, y, mean_w)) * len(x)
+        tot += float(ufld_loss(loc, ex, y, mean_w, row_w)) * len(x)
         n += len(x)
     net.train()
     return tot / max(n, 1)
@@ -178,6 +200,7 @@ def main() -> None:
     dev = pick_device()
     amp = bool(tc.amp) and dev == "cuda"
     mean_w = float(tc.mean_loss_weight)
+    row_w = far_row_weights(spec.row_anchor, tc.far_rows if "far_rows" in tc else None)
     torch.manual_seed(0)
     np.random.seed(0)
 
@@ -202,13 +225,14 @@ def main() -> None:
         ds_va_aug = UFLDDataset(root, "val", spec, tc.augment, fixed_seed=int(tc.select_seed), color=False)
         dl_va_aug = DataLoader(ds_va_aug, batch_size=int(tc.batch_size), shuffle=False, num_workers=nw,
                                pin_memory=dev == "cuda", persistent_workers=nw > 0)
-    logger.info("장치 %s (fp16 %s) · 학습 %d장 · 선택용 %d장 · 배치 %d · 에폭 %d · 기하 증강 %s · 에폭 선택 %s",
+    logger.info("장치 %s (fp16 %s) · 학습 %d장 · 선택용 %d장 · 배치 %d · 에폭 %d · 기하 증강 %s · 에폭 선택 %s · 먼 행 가중 %s",
                 dev, amp, len(ds_tr), len(ds_va), int(tc.batch_size), epochs,
-                "켬" if has_geo else "끔", "증강 건 선택용 손실" if select_by == "aug" else "선택용 손실")
+                "켬" if has_geo else "끔", "증강 건 선택용 손실" if select_by == "aug" else "선택용 손실",
+                "끔" if row_w is None else f"화면 높이 {float(tc.far_rows.below)} 위 {int((row_w != 1).sum())}행 × {float(tc.far_rows.weight)}")
 
     def val_losses() -> tuple[float, float | None]:
-        v = evaluate(net, dl_va, dev, mean_w, amp)
-        va = evaluate(net, dl_va_aug, dev, mean_w, amp) if dl_va_aug is not None else None
+        v = evaluate(net, dl_va, dev, mean_w, amp, row_w)
+        va = evaluate(net, dl_va_aug, dev, mean_w, amp, row_w) if dl_va_aug is not None else None
         return v, va
 
     def score(v: float, va: float | None) -> float:
@@ -256,7 +280,7 @@ def main() -> None:
             x, y = x.to(dev, non_blocking=True), y.to(dev, non_blocking=True)
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
                 loc, ex = net(x)
-            loss = ufld_loss(loc, ex, y, mean_w)
+            loss = ufld_loss(loc, ex, y, mean_w, row_w)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(opt)
