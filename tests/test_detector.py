@@ -103,3 +103,93 @@ def test_finetuned_single_class_weights_select_vehicle():
 def test_weights_without_matching_class_fail_at_startup():
     with pytest.raises(ValueError, match="vehicle_class_names"):
         _resolve({0: "person", 1: "dog"}, WANTED)
+
+
+# ── 먼 영역 한 번 더 검출 (detection.far_region) ──────────────────────────────
+from types import SimpleNamespace
+
+import numpy as np
+
+from src.detection.detector import merge_far_boxes
+from src.detection.types import VehicleBox
+
+
+def _box(x1, y1, x2, y2, conf):
+    return VehicleBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf, class_id=0)
+
+
+def test_far_box_not_overlapping_is_added_and_full_boxes_are_kept():
+    full = [_box(0, 0, 100, 100, 0.9), _box(60, 0, 160, 100, 0.8)]   # 붙어 있는 두 차 — 다시 거르지 않는다
+    far = [_box(500, 300, 520, 315, 0.6)]
+    out = merge_far_boxes(full, far, merge_iou=0.5, high_thresh=0.5)
+    assert len(out) == 3
+
+
+def test_far_box_overlapping_full_box_is_dropped():
+    full = [_box(500, 300, 520, 315, 0.7)]
+    far = [_box(501, 300, 521, 315, 0.8)]
+    assert merge_far_boxes(full, far, 0.5, 0.5) == full
+
+
+def test_confident_far_box_replaces_unconfident_full_box():
+    """작게 봐서 새 트랙을 못 만들던 차(0.2)를 확대해서 확신(0.7)했으면 먼 영역 박스로 바꾼다"""
+    full = [_box(500, 300, 520, 315, 0.2), _box(0, 0, 100, 100, 0.9)]
+    far = [_box(501, 300, 521, 315, 0.7)]
+    out = merge_far_boxes(full, far, 0.5, 0.5)
+    assert sorted(b.confidence for b in out) == [0.7, 0.9]
+
+
+class _Pred:
+    def __init__(self, rows):
+        self.boxes = [
+            SimpleNamespace(cls=[0], xyxy=[r[:4]], conf=[r[4]]) for r in rows
+        ]
+
+
+class _ShapeModel:
+    """입력 크기로 전체 화면/먼 영역을 구분해 정해진 박스를 돌려준다 (좌표는 받은 이미지 기준)"""
+    names = {0: "vehicle"}
+
+    def __init__(self, full_rows, far_rows):
+        self.full_rows, self.far_rows = full_rows, far_rows
+
+    def predict(self, image, **_):
+        return [_Pred(self.full_rows if image.shape[1] == 1280 else self.far_rows)]
+
+
+def _far_detector(full_rows, far_rows, enabled=True):
+    d = VehicleDetector.__new__(VehicleDetector)
+    d._model = _ShapeModel(full_rows, far_rows)
+    d._vehicle_class_ids = frozenset({0})
+    d._conf_threshold, d._iou_threshold = 0.1, 0.45
+    d._roi_top_ratio, d._center_region_ratio = 0.0, 0.7
+    d._far_enabled = enabled
+    d._far_x, d._far_y = (0.25, 0.75), (0.30, 0.65)
+    d._far_edge_ratio, d._far_merge_iou, d._track_high_thresh = 0.01, 0.5, 0.5
+    return d
+
+
+def test_far_region_boxes_return_to_frame_coordinates():
+    # 1280×720 → 먼 영역 x 320~960, y 216~468. 먼 영역 안 (300,100)은 원래 화면 (620,316)
+    d = _far_detector(full_rows=[], far_rows=[(300, 100, 320, 115, 0.8)])
+    boxes = d.detect(np.zeros((720, 1280, 3), np.uint8))
+    assert len(boxes) == 1
+    b = boxes[0]
+    assert (b.x1, b.y1, b.x2, b.y2) == (620, 316, 640, 331)
+
+
+def test_far_region_drops_boxes_touching_crop_edge_and_can_be_disabled():
+    edge = (0, 100, 30, 115, 0.8)                     # 먼 영역 왼쪽 경계에 붙음 → 몸통이 잘린 차
+    inside = (300, 100, 320, 115, 0.8)
+    d = _far_detector(full_rows=[], far_rows=[edge, inside])
+    assert len(d.detect(np.zeros((720, 1280, 3), np.uint8))) == 1
+    d = _far_detector(full_rows=[], far_rows=[edge, inside], enabled=False)
+    assert d.detect(np.zeros((720, 1280, 3), np.uint8)) == []
+
+
+def test_far_region_config_loads_per_platform():
+    from src.utils.config import load_config
+
+    assert load_config("configs/default.yaml").detection.far_region.enabled is True
+    assert load_config("configs/pi5.yaml").detection.far_region.enabled is False     # 320×320 입력
+    assert load_config("configs/pi5_ufld.yaml").detection.far_region.enabled is True  # 1280×720 입력

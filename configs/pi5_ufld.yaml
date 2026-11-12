@@ -11,6 +11,10 @@ input:
   # 1280×720은 system-architecture.md의 카메라 main 스트림 값. 차량 검출은 모델 입력 크기로 따로 줄여 쓴다.
   resolution: [1280, 720]
 
+detection:
+  far_region:
+    enabled: true              # 1280×720이면 먼 영역(640×252)을 320 입력에 2배로 넣는다 — default.yaml far_region 근거
+
 lane:
   method: ufld
   ufld:

@@ -4732,3 +4732,217 @@ for mis, tag in ((False, '검증'), (True, '틀어짐')):
         n = len(rows[MODELS31[0]])
         print(f'  {name:<13}{n:>6}' + ''.join(f'{cell31(rows[m]):>28}' for m in MODELS31))
 print('\n같은 차량·같은 정답 — 대수는 모델끼리 같고, 잰 비율 차이는 판정 통과율 차이다.')
+
+
+# ============================== 32번 셀 ==============================
+# 32. 먼 곳 확대 추론 — 소실점 기준으로 화면을 확대해 차선 모델에 한 번 더 넣으면 먼 차 offset이 정확해지나
+# 필요: 25번 → 29번 셀을 이 세션에서 먼저 실행 (PRED25·VEH29·offset29·fit_line29·guard25 등). GPU, 모델 하나당 2~3분.
+#
+# 왜: 30·31번(먼 행 가중 재학습)은 먼 곳 오차를 조금만 줄였다. 남은 가설 = 해상도 — 모델 입력(1600×320)에서
+#     먼 곳 차로는 몇십 픽셀뿐이다. 학습 없이 입력만 키워서 이 가설을 직접 확인한다.
+# 방법: 1) 원본으로 한 번 추론(지금과 같음) → 가까운 구간(0.68~0.98) 좌우 차선을 직선으로 맞춰 교점 = 소실점
+#       2) 소실점을 중심으로 Z배 확대한 화면을 같은 모델에 다시 넣는다. 소실점을 지나는 직선은 이 확대에서 그대로 직선이라
+#          확대 화면도 '같은 도로를 더 멀리서 본 장면'처럼 보인다(학습 때 확대 0.8~1.2 증강과 같은 종류의 변환).
+#          원본 사진(1920×1080)을 1600폭으로 줄여 넣는 지금과 달리, 확대하면 먼 곳의 원본 픽셀이 실제로 더 들어간다.
+#       3) 확대 화면의 예측 점을 원래 좌표로 되돌려, 차 바닥 높이에서 offset을 잰다. 판정(안전장치)은 1)의 결과 그대로.
+#       실행에 넣으면 프레임마다 차선 추론이 2번 — NPU 예산 문제는 결과를 보고 따진다.
+# 비교: 원본(① 직접 = 지금 실행 코드) vs 확대 Z배. 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수 (31번과 같은 정의)
+import numpy as np, cv2, torch, time
+
+MODEL32 = '재학습2'                                   # 채택 모델
+ZOOMS32 = [1.5, 2.0]
+NEAR32  = 0.68
+VP_X32  = (0.25, 0.75)                               # 소실점이 이 범위(화면 비율) 밖이면 그 프레임은 확대 안 함(차선 이상)
+VP_Y32  = (0.25, 0.55)
+
+for need in ('VEH29', 'offset29', 'fit_line29', 'PRED25'):
+    if need not in globals():
+        raise SystemExit('25번 → 29번 셀을 이 세션에서 먼저 실행하세요')
+if MODEL32 not in PRED25:
+    raise SystemExit(f'25번 셀에 {MODEL32} 결과가 없음')
+
+
+def vp32(L, R, h):
+    """가까운 구간 좌우 차선 직선의 교점 (x, y) 또는 None"""
+    fl = fit_line29(L, NEAR32 * h, BOT25 * h) if len(L) else None
+    fr = fit_line29(R, NEAR32 * h, BOT25 * h) if len(R) else None
+    if fl is None or fr is None or abs(fl[0] - fr[0]) < 1e-6:
+        return None
+    y = (fr[1] - fl[1]) / (fl[0] - fr[0])            # x = a·y + b 두 직선의 교점
+    return float(np.polyval(fl, y)), float(y)
+
+
+VP32 = {}
+for f in FR25:
+    L, R, w, h = PRED25[MODEL32][f['key']]
+    v = vp32(L, R, h)
+    if v is not None and VP_X32[0] * w <= v[0] <= VP_X32[1] * w and VP_Y32[0] * h <= v[1] <= VP_Y32[1] * h:
+        VP32[f['key']] = v
+print(f'소실점 구함 {len(VP32)}/{len(FR25)}장 (나머지는 확대 안 함 → 그 프레임 먼 차는 "못 잼")')
+
+
+@torch.no_grad()
+def infer_zoom32(path, z):
+    """소실점 중심 z배 확대 화면으로 추론 → 원래 좌표로 되돌린 (좌, 우) 차선 점"""
+    net = UFLDv2RowNet(SPEC25, grid_col=100, num_col=81, fc_norm=True)
+    load_weights(net, path)
+    net.keep_rows_only()
+    net = net.eval().to(DEV25)
+    keys = [f for f in FR25 if f['key'] in VP32]
+    out, t0 = {}, time.time()
+    for i in range(0, len(keys), BS25):
+        batch = keys[i:i + BS25]
+        imgs = []
+        for f in batch:
+            b = cv2.imread(str(f['ip']))
+            hh, ww = b.shape[:2]
+            s = ww / PRED25[MODEL32][f['key']][2]      # 25번 예측 좌표 → 이 사진 좌표 (보통 1)
+            vx, vy = VP32[f['key']][0] * s, VP32[f['key']][1] * s
+            M = np.float32([[z, 0, (1 - z) * vx], [0, z, (1 - z) * vy]])
+            imgs.append((cv2.warpAffine(b, M, (ww, hh), flags=cv2.INTER_LINEAR), vx, vy, s))
+        x = torch.from_numpy(np.concatenate([preprocess(b, SPEC25) for b, *_ in imgs])).to(DEV25)
+        loc, ex = net(x)
+        loc, ex = loc.float().cpu().numpy(), ex.float().cpu().numpy()
+        for j, (f, (b, vx, vy, s)) in enumerate(zip(batch, imgs)):
+            hh, ww = b.shape[:2]
+            lanes = decode_rows(loc[j], ex[j], SPEC25, ww, hh)
+            back = []
+            for k in (1, 2):
+                p = lanes[k]
+                q = np.c_[vx + (p[:, 0] - vx) / z, vy + (p[:, 1] - vy) / z] / s if len(p) else p
+                back.append(q[np.argsort(q[:, 1])] if len(q) else q)
+            out[f['key']] = tuple(back)
+    print(f'  확대 {z}배: {len(out)}장 {time.time() - t0:.0f}초')
+    del net
+    if DEV25 == 'cuda':
+        torch.cuda.empty_cache()
+    return out
+
+
+if 'ZPRED32' not in globals():
+    ZPRED32 = {}
+for z in ZOOMS32:
+    if z not in ZPRED32:
+        ZPRED32[z] = infer_zoom32(MODELS25[MODEL32], z)
+
+
+def xa32(pts, y):
+    """점 범위 안에서만 (확대 화면은 원래 화면의 위쪽 일부만 덮는다 — 밖으로 연장하지 않음)"""
+    if len(pts) < 2 or not (pts[0, 1] <= y <= pts[-1, 1]):
+        return None
+    return x_at(pts, y)
+
+
+METHODS32 = ['원본(지금)'] + [f'확대 {z}배' for z in ZOOMS32]
+REC32 = []
+for mis in (False, True):
+    g, cur = None, None
+    for f in FR25:
+        if f['mis'] != mis:
+            continue
+        if f['seq'] != cur:
+            g, cur = guard25(NEAR32, False), f['seq']
+        L, R, w, h = PRED25[MODEL32][f['key']]
+        ok = g.check(L, R, w, h, f['idx'] / 30.0).valid
+        s = w / f['W']
+        gl = [(x * s, y * s) for x, y in f['l4'][1][3]]
+        gr = [(x * s, y * s) for x, y in f['l4'][2][3]]
+        for x1, y1, x2, y2 in VEH29.get(f['key'], []):
+            cx, yb = (x1 + x2) / 2, float(y2)
+            if yb > BOT25 * h:
+                continue
+            gt = offset29(x_at(gl, yb), x_at(gr, yb), cx)
+            if gt is None or abs(gt) > LANES29:
+                continue
+            row = dict(mis=mis, yr=yb / h)
+            d = offset29(x_at(L, yb) if len(L) >= 2 else None, x_at(R, yb) if len(R) >= 2 else None, cx) if ok else None
+            row['원본(지금)'] = None if d is None else abs(d - gt)
+            for z in ZOOMS32:
+                zl = ZPRED32[z].get(f['key'])
+                d = offset29(xa32(zl[0], yb), xa32(zl[1], yb), cx) if (ok and zl is not None) else None
+                row[f'확대 {z}배'] = None if d is None else abs(d - gt)
+            REC32.append(row)
+
+
+def cell32(rows, m):
+    if not rows:
+        return f'{"-":>27}'
+    e = np.array([r[m] for r in rows if r[m] is not None])
+    if len(e) == 0:
+        return f'{"0%":>5} {"-":>6} {"-":>14}'
+    c = [int((e > t).sum()) for t in ERR25]
+    return f'{len(e) / len(rows) * 100:>4.0f}% {np.median(e):>6.3f} {c[0]:>4}/{c[1]:>4}/{c[2]:>4}'
+
+
+print('\n' + '═' * 110)
+print(f'[{MODEL32}] 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수   (판정은 전부 원본 추론 {NEAR32}~{BOT25})')
+print('확대 화면은 원래 화면 위쪽 일부만 덮는다 → 가까운 차는 확대 방식으로 못 잴 수 있음(실제로는 원본으로 잼)')
+print('═' * 110)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}{"대수":>6}' + ''.join(f'{m:>28}' for m in METHODS32))
+    groups = [(f'{a:.2f}~{b:.2f}', lambda y, a=a, b=b: a <= y < b) for a, b in zip(BINS29[:-1], BINS29[1:])]
+    groups += [('0.58 위 (먼 차)', lambda y: y < 0.58), ('0.54~0.58', lambda y: 0.54 <= y < 0.58)]
+    for name, cond in groups:
+        rows = [r for r in REC32 if r['mis'] == mis and cond(r['yr'])]
+        print(f'  {name:<13}{len(rows):>6}' + ''.join(f'{cell32(rows, m):>28}' for m in METHODS32))
+print('\n보는 법: 먼 차(0.58 위) 행에서 확대가 원본보다 0.10 초과가 크게 줄면 → 해상도가 원인. 비슷하면 → 해상도 아님')
+
+
+# ============================== 33번 셀 ==============================
+# 33. 확대 효과를 '같은 차끼리' 다시 비교 — 32번 결과(REC32)만 다시 센다. 추론 없음, 몇 초.
+# 필요: 32번 셀을 이 세션에서 먼저 실행.
+#
+# 왜: 32번 표는 방법마다 잰 차가 다르다(먼 차 원본 69% vs 확대 77~79%). 확대가 원본이 못 잰 어려운 차까지 재서
+#     초과 대수가 늘었을 수 있다. 그래서 ① 둘 다 잰 차만 놓고 오차를 비교하고,
+#     ② '원본으로 재고, 원본이 못 잰 차만 확대로 보충'하는 방식이 원본보다 나쁜지 본다.
+import numpy as np
+
+if 'REC32' not in globals():
+    raise SystemExit('32번 셀을 이 세션에서 먼저 실행하세요')
+
+GROUPS33 = [(f'{a:.2f}~{b:.2f}', lambda y, a=a, b=b: a <= y < b) for a, b in zip(BINS29[:-1], BINS29[1:]) if a < 0.62]
+GROUPS33 += [('0.58 위 (먼 차)', lambda y: y < 0.58)]
+
+
+def cnt33(e):
+    e = np.asarray(e)
+    if len(e) == 0:
+        return f'{"-":>6} {"-":>14}'
+    c = [int((e > t).sum()) for t in ERR25]
+    return f'{np.median(e):>6.3f} {c[0]:>4}/{c[1]:>4}/{c[2]:>4}'
+
+
+print('═' * 112)
+print('① 둘 다 잰 차만 — 칸 = 오차 중앙값 · 0.10/0.15/0.25 초과 대수 (원본 | 확대)')
+print('═' * 112)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}' + ''.join(f'{f"확대 {z}배: 대수":>14}{"원본":>22}{"확대":>22}' for z in ZOOMS32))
+    for name, cond in GROUPS33:
+        line = f'  {name:<13}'
+        for z in ZOOMS32:
+            m = f'확대 {z}배'
+            rs = [r for r in REC32 if r['mis'] == mis and cond(r['yr']) and r['원본(지금)'] is not None and r[m] is not None]
+            line += f'{len(rs):>14}{cnt33([r["원본(지금)"] for r in rs]):>22}{cnt33([r[m] for r in rs]):>22}'
+        print(line)
+
+print('\n' + '═' * 112)
+print('② 원본으로 재고, 원본이 못 잰 차만 확대로 보충 — 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수')
+print('═' * 112)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}{"대수":>6}{"원본(지금)":>28}' + ''.join(f'{f"원본+확대 {z}배 보충":>28}' for z in ZOOMS32))
+    for name, cond in GROUPS33:
+        rows = [r for r in REC32 if r['mis'] == mis and cond(r['yr'])]
+        if not rows:
+            print(f'  {name:<13}{0:>6}')
+            continue
+        line = f'  {name:<13}{len(rows):>6}'
+        for m in [None] + [f'확대 {z}배' for z in ZOOMS32]:
+            e = [r['원본(지금)'] if r['원본(지금)'] is not None or m is None else r[m] for r in rows]
+            e = [v for v in e if v is not None]
+            line += f'{f"{len(e) / len(rows) * 100:.0f}%":>6}{cnt33(e):>22}'
+        print(line)
+print('\n보는 법: ①에서 확대 쪽 초과가 원본보다 적으면 → 같은 차라도 확대가 더 정확(해상도가 원인). 많거나 같으면 → 해상도 아님.')
+print('        ②에서 보충이 잰 비율을 올리면서 초과 대수가 "늘어난 대수만큼만" 늘면 → 못 재던 차를 원본 수준으로 더 재는 것')

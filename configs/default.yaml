@@ -38,6 +38,18 @@ detection:
   # COCO 사전학습: car·motorcycle·bus·truck / 파인튜닝(notebook/safewatch_vehicle_finetune): vehicle
   # 둘 다 적어 두면 가중치를 바꿔도 config를 고칠 필요가 없다. 하나도 안 맞으면 시작 시 에러
   vehicle_class_names: [car, motorcycle, bus, truck, vehicle]
+  # 먼 영역 한 번 더 검출 — 화면 가로 x_ratio · 세로 y_ratio(비율)를 잘라 같은 모델에 한 번 더 넣는다.
+  # 근거: notebook/safewatch_vehicle_finetune 8·9·10번 셀 (AI Hub 검증 494장, 1920×1080 원본, 2026-11-12).
+  # 먼 차(바닥이 화면 0.58 위) 새 트랙 Recall(conf ≥ 0.5) 320 입력 0.49 → 0.70 (전체 640 입력 0.72), 0.58 아래는 그대로.
+  # 늘어난 '오탐' 대부분(212/267)은 그림으로 보니 라벨이 안 붙은 실제 먼 차였다.
+  # 검출 연산 약 2배(640은 약 4배). ⚠️ 원본 프레임이 모델 입력보다 충분히 커야 효과가 있다 —
+  # 320×320으로 받는 pi5.yaml은 잘라도 새 픽셀이 없어 끈다
+  far_region:
+    enabled: true
+    x_ratio: [0.25, 0.75]
+    y_ratio: [0.30, 0.65]      # 먼 차 바닥(0.42~0.58)이 들어가게
+    edge_ratio: 0.01           # 잘린 경계에서 화면의 이 비율 안쪽까지 닿은 박스는 버림(몸통이 잘린 차)
+    merge_iou: 0.5             # 전체 화면 검출과 이 이상 겹치면 같은 차. 0.3·포개짐 기준은 Recall만 떨어졌다(10번 셀)
 
 lane:
   # 차선 인식 (src/lane). 방식과 값의 근거는 pipeline-architecture.md 3.3, risk-criteria.md 4.1.
