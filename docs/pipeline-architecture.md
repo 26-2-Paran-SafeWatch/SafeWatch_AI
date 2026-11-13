@@ -45,7 +45,7 @@ PC 개발 환경과 Pi5 타깃 환경의 차이는 `input`, `detection` 두 모�
         ▼                                 ▼
 ┌───────────────────┐            ┌───────────────────┐
 │    DETECTION      │            │       LANE        │
-│  YOLOv8n          │            │  OpenCV           │
+│  YOLOv8n          │            │  OpenCV / UFLDv2  │
 │  → VehicleBox[]   │            │  → LaneModel      │
 └─────────┬─────────┘            └─────────┬─────────┘
           │                                │
