@@ -16,9 +16,9 @@ from src.metrics.relative_motion import rolling_expansion_rate
 @dataclass
 class OffsetSample:
     timestamp: float
-    offset_m: float              # 차선 중심 대비 편차, 부호 있음
-    offset_ratio: float          # 차로 폭 대비 비율
-    lateral_velocity_mps: float  # 평활화된 offset의 시간 미분 (risk-criteria.md 2.6)
+    offset_m: float              # 그 차량이 달리는 차로의 중심 대비 편차, 부호 있음 (risk-criteria.md 2.1)
+    offset_ratio: float          # 차로 폭 대비 비율. 대략 -0.5 ~ +0.5 (차로 배정 히스테리시스만큼 넘을 수 있음)
+    lateral_velocity_mps: float  # 연속 횡위치(position_m)의 시간 미분 (risk-criteria.md 2.6)
     lane_confidence: float
     is_interpolated: bool        # 검출 없이 추적만으로 채워진 프레임인지
     bbox_height: float | None = None
@@ -31,6 +31,12 @@ class OffsetSample:
     시점에만 채워진다. 즉 지금 구현에서는 차선 인식이 실패하면 속도 불규칙
     지표도 함께 멈춘다 — 독립성의 이점이 아직 완전히 살지 않는다. 차선과
     무관하게 항상 기록하도록 분리하는 것은 후속 작업이다."""
+    lane_index: int = 0
+    """자차 차로 기준 차로 번호 — 0 자차, -1 좌측, +1 우측 (`lane.max_lane_index`까지)."""
+    position_m: float = 0.0
+    """차선 경계를 넘어도 끊기지 않는 연속 횡위치(m, 우측 양수). 횡방향 속도의 기준이다 —
+    차로 배정이 바뀌는 순간 `offset_m`은 차로 폭만큼 점프하지만 실제 이동은 없다.
+    기준점은 차량마다 처음 관측된 시점의 자차 차로 중심이라 절댓값 자체에는 의미가 없다."""
 
 
 @dataclass

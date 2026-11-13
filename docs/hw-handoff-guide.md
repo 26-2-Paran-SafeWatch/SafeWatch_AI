@@ -24,7 +24,7 @@ HW 쪽(카메라·ESP32·링 버퍼)에서 우리한테 맞춰줘야 하는 게 
 | 구성 | 내용 | 상태 |
 |---|---|---|
 | 모델 | YOLOv8n(차량 검출) **1개뿐** | **사전학습(COCO) 가중치 그대로 — 아직 파인튜닝 전** |
-| 차선 인식 | OpenCV (딥러닝 아님) | 완료, 실차 영상으로 미검증 |
+| 차선 인식 | OpenCV (기본) / UFLDv2 딥러닝 (시험 — 2.5절) | OpenCV 완료·실차 영상 미검증, UFLD는 시험 단계 |
 | 추적 | ByteTrack (딥러닝 아님) | 완료 |
 | 위험 판단 | rule-based (사행·차선걸침·스웨빙·표류·속도불규칙) | 완료, 임계값은 초안 |
 | 이벤트 생성 | JSON 메타데이터 + 로컬 SQLite 큐 | 완료, 클립·전송은 미연결(3장 참고) |
@@ -95,6 +95,58 @@ python -m src.main --config configs/pi5.yaml --source camera
 
 카메라에서 실시간으로 읽어 파이프라인을 돌린다. `Ctrl+C`로 중단하면 지금까지의
 단계별 평균 처리 시간을 로그로 남기고 종료한다.
+
+### 2.5 차선 딥러닝(UFLD)으로 시험해 보기 (2026-11-09 추가)
+
+차선 인식을 OpenCV에서 딥러닝(UFLDv2)으로 바꾸는 중이다(`docs/lane-detection-dl-plan.md`).
+AI Hub 학습 데이터로 재학습한 모델이 나와서 Pi5에서 시험할 수 있다. **아직 시험 단계**라
+기본 설정(`pi5.yaml`)은 그대로 OpenCV이고, 아래 별도 설정으로만 켠다.
+
+1. **브랜치** — **Pi 시험은 `main` 기준이다** (2026-11-13부터). `dev`는 작업 중인 브랜치라 Pi에서 쓰지 않는다.
+   Pi에 넣을 변경은 dev → main PR로 올린다. UFLD 코드는 그 PR로 main에 들어갔다.
+
+   ```bash
+   git fetch origin
+   git checkout main
+   git pull
+   ```
+
+2. **모델 파일** — 저장소에 안 올린다(약 550MB, GitHub 100MB 제한 + `data/models/`는 커밋 금지).
+   구글 드라이브 `SafeWatch/ufld/ufld_aihub_aug.onnx`를 공유 링크로 받아 **`data/models/ufld_aihub_aug.onnx`**에 둔다.
+   만든 쪽이 노트북 28번 셀 출력의 SHA-256 값을 같이 주면, 받은 파일이 깨지지 않았는지 확인한다.
+
+   ```bash
+   sha256sum data/models/ufld_aihub_aug.onnx
+   ```
+
+   - 어떤 모델인가: CULane 사전학습 가중치를 AI Hub Training 차선 라벨 약 2만 장으로 재학습한 2차 모델
+     (기하 증강 12에폭). 노트북 25번 셀 기준 지금 최선이다.
+   - 차량 검출 모델(`data/models/yolov8n-safewatch.onnx`)은 2.2절 그대로 필요하다.
+
+3. **벤치마크 먼저** — 설정은 `configs/pi5_ufld.yaml`(`pi5.yaml` 상속, 차선만 UFLD).
+
+   ```bash
+   python -m scripts.benchmark --config configs/pi5_ufld.yaml --source camera --duration-sec 60
+   ```
+
+   **`lane` 단계 시간(ms)을 꼭 알려줘.** 맥 CPU 4스레드에서 한 장에 약 141ms였으니 Pi5 CPU로는
+   실시간(10fps)이 안 나올 가능성이 크다 — 그 실측값이 NPU 도입 판단 근거가 된다. 메모리 사용량도 같이 보면 좋다
+   (모델만 약 550MB).
+
+4. **실제 실행**
+
+   ```bash
+   python -m src.main --config configs/pi5_ufld.yaml --source camera
+   ```
+
+주의할 것
+
+- **카메라 해상도**: `pi5_ufld.yaml`은 `input.resolution`을 **1280×720**으로 바꾼다. 차선 모델이 16:9
+  블랙박스 화면으로 학습해서 `pi5.yaml`의 320×320 정사각형으론 맞지 않는다. 카메라가 이 해상도를 못 내면
+  알려줘(3.1절 해상도 문제와 같은 얘기다).
+- **카메라 장착 위치**: 학습 데이터는 앞 유리 위쪽 가운데 블랙박스다. 위치·각도가 많이 다르면 성능이
+  떨어질 수 있다(장착이 다른 카메라 평가에서 사용 가능 비율 약 78%). 장착 사진을 같이 주면 판단에 도움이 된다.
+- 차선이 안 잡히는 프레임은 "보류"로 처리된다(정상 동작). 오검출보다 보류를 택하도록 안전장치가 걸려 있다.
 
 ---
 

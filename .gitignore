@@ -35,3 +35,7 @@ samples/*
 # 환경 변수 / 시크릿
 .env
 *.local.yaml
+
+# ultralytics가 사전학습 가중치를 받을 때 작업 디렉터리(저장소 루트)에 떨어뜨린다.
+# 모델 파일은 data/models/ 아래에만 둔다.
+/*.pt

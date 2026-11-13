@@ -1,8 +1,13 @@
 """Bird's eye view perspective 변환. docs/pipeline-architecture.md 3.3 참고.
 
-⚠️ `configs/default.yaml`의 `lane.perspective.src_points_ratio`는 카메라
-장착 위치·화각에 의존하는 placeholder 값이다. 실제 카메라가 확정되면
-재캘리브레이션이 필요하다 (pipeline-architecture.md 5장 미결 사항).
+⚠️ `configs/default.yaml`의 `lane.perspective.src_points_ratio`는 AI Hub
+`60_전방` 카메라의 정답 라벨로 보정한 값이다(`notebook/safewatch_lane_calib.ipynb`).
+우리 카메라 값이 아니므로 장착이 확정되면 재보정이 필요하다
+(pipeline-architecture.md 5장 미결 사항).
+
+사다리꼴은 출력 폭 양옆 `margin_ratio`만큼 안쪽으로 매핑한다. 자차 차로를
+조감도 전체 폭에 꽉 채우면 옆 차로와 갓길이 잘려 나가, 차선 검출이 바깥
+구조물과 진짜 차선을 구분할 수 없고 옆 차로 차량의 offset도 잴 수 없다.
 """
 
 from __future__ import annotations
@@ -20,7 +25,9 @@ class PerspectiveTransformer:
         self._src_ratio = p_cfg.src_points_ratio
 
         w, h = self._warp_size
-        self._dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+        m = p_cfg.margin_ratio * w
+        self._dst = np.float32([[m, 0], [w - m, 0], [w - m, h], [m, h]])
+        self._expected_lane_width_px = float(w - 2 * m)
 
         self._cached_frame_size: tuple[int, int] | None = None
         self._M: np.ndarray | None = None
@@ -38,6 +45,16 @@ class PerspectiveTransformer:
             self._build_matrix(width, height)
         return cv2.warpPerspective(image, self._M, self._warp_size)
 
+    def warp_mask(self, mask: np.ndarray) -> np.ndarray:
+        """단일 채널 마스크(원본 프레임 크기)를 조감도로 옮긴다. 값이 섞이지 않게 최근접 보간.
+
+        `warp()`와 같은 프레임 크기여야 한다 — 행렬을 그 크기로 만든다.
+        """
+        height, width = mask.shape[:2]
+        if self._cached_frame_size != (width, height):
+            self._build_matrix(width, height)
+        return cv2.warpPerspective(mask, self._M, self._warp_size, flags=cv2.INTER_NEAREST)
+
     def warp_points(self, points: np.ndarray) -> np.ndarray:
         """원본 프레임 좌표(Nx2)를 bird's-eye-view 좌표로 변환한다.
 
@@ -54,6 +71,11 @@ class PerspectiveTransformer:
     def warp_size(self) -> tuple[int, int]:
         """(width, height) — BEV 좌표 범위 검사에 사용한다."""
         return self._warp_size
+
+    @property
+    def expected_lane_width_px(self) -> float:
+        """보정이 맞을 때 자차 차로가 조감도에서 가질 폭(px). 신뢰도의 폭 타당성 기준."""
+        return self._expected_lane_width_px
 
     def unwarp_points(self, points: np.ndarray) -> np.ndarray:
         """bird's-eye-view 좌표(Nx2)를 원본 프레임 좌표로 역변환한다.

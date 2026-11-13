@@ -31,20 +31,48 @@ class FrameSource(ABC):
 
 
 class VideoFileSource(FrameSource):
-    """PC 개발용 — 영상 파일 또는 웹캠 인덱스."""
+    """PC 개발용 — 영상 파일 또는 웹캠 인덱스.
+
+    타임스탬프 = 영상을 연 시각(epoch) + **영상 안에서의 경과 시간**. 처리 시각(time.time())을 쓰면
+    PC가 빨리 돌릴수록 시간이 압축되고 느리면 늘어나서, 초 단위 창(offset 버퍼·차로 폭 기록·위험 판단
+    지속 시간)이 영상 속 실제 시간과 어긋난다. 경과 시간은 컨테이너의 재생 위치(ms)를 우선 쓰고,
+    못 읽으면 frame_id / fps로 계산한다. 웹캠(숫자 인덱스)은 실시간이라 처리 시각을 그대로 쓴다.
+    """
+
+    _FALLBACK_FPS = 30.0
 
     def __init__(self, path: str):
-        self._cap = cv2.VideoCapture(path)
+        self._live = path.isdigit()
+        self._cap = cv2.VideoCapture(int(path) if self._live else path)
         if not self._cap.isOpened():
             raise RuntimeError(f"영상 소스를 열 수 없습니다: {path}")
         self._frame_id = 0
+        self._t0 = time.time()
+        fps = float(self._cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        self._fps = fps if 0.0 < fps < 1000.0 else self._FALLBACK_FPS
+
+    def _video_time(self) -> float:
+        """방금 읽은 프레임의 영상 내 시각(초)."""
+        pos_ms = float(self._cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+        if pos_ms > 0.0 or self._frame_id == 0:
+            return pos_ms / 1000.0
+        return self._frame_id / self._fps
 
     def frames(self) -> Iterator[Frame]:
+        last = -1.0
         while True:
             ok, image = self._cap.read()
             if not ok:
                 break
-            yield Frame(image=image, timestamp=time.time(), frame_id=self._frame_id)
+            if self._live:
+                ts = time.time()
+            else:
+                vt = self._video_time()
+                if vt <= last:                      # 재생 위치가 안 움직이는 코덱 — 프레임 번호로 (역행 금지)
+                    vt = max(self._frame_id / self._fps, last + 1e-6)
+                last = vt
+                ts = self._t0 + vt
+            yield Frame(image=image, timestamp=ts, frame_id=self._frame_id)
             self._frame_id += 1
 
     def close(self) -> None:

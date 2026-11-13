@@ -19,62 +19,133 @@ sensors:
 
 detection:
   model: yolov8n
-  weights: data/models/yolov8n.pt
+  # 파인튜닝 가중치 (notebook/safewatch_vehicle_finetune, vehicle_v1 — 단일 클래스 vehicle, imgsz 320).
+  # 배포 조건 검증 494장 판정 영역 F1 0.253(사전학습) → 0.684. data/는 커밋하지 않으므로 드라이브에서 받아 둔다.
+  # 사전학습으로 되돌리려면 data/models/yolov8n.pt — vehicle_class_names가 둘 다 처리한다
+  weights: data/models/yolov8n-safewatch.pt
   interval: 1                 # N프레임마다 검출 실행, 중간은 tracking이 보간
-  conf_threshold: 0.5
+  # 이 이상은 전부 추적기로 넘긴다 — 0.5 미만은 기존 트랙을 잇는 데만 쓰인다 (tracking.track_low_thresh와 같은 값).
+  # 근거 risk-criteria.md 4.1 "객체 검출 신뢰도" [TBD — 연속 영상으로 트랙 끊김 재측정 필요]
+  conf_threshold: 0.1
   iou_threshold: 0.45          # NMS IoU 임계값
   engine: pytorch              # pytorch | onnxruntime | ncnn
-  roi_top_ratio: 0.45          # 프레임 상단 이 비율만큼 제외 (하늘 영역)
+  # 프레임 상단 이 비율만큼 잘라내고 추론. 0 = 크롭 없음 (2026-11-02, 0.45에서 변경).
+  # 0.45에서 놓친 근거리 차량의 73%가 크롭선에 잘린 차량이었다 — 근거리 Recall 0.724 → 0.881(0),
+  # 오탐 99 → 56. 고정 320 입력 ONNX·NCNN에서는 잘라도 연산이 줄지 않는다 (pipeline-architecture.md 3.2)
+  roi_top_ratio: 0.0
   center_region_ratio: 0.7     # 전방 차량 필터링 — 프레임 폭 중앙 이 비율 안의 차량만 채택
+  # 차량으로 취급할 클래스 이름 — 가중치 메타데이터의 이름과 맞춘다(id가 아니라 이름).
+  # COCO 사전학습: car·motorcycle·bus·truck / 파인튜닝(notebook/safewatch_vehicle_finetune): vehicle
+  # 둘 다 적어 두면 가중치를 바꿔도 config를 고칠 필요가 없다. 하나도 안 맞으면 시작 시 에러
+  vehicle_class_names: [car, motorcycle, bus, truck, vehicle]
+  # 먼 영역 한 번 더 검출 — 화면 가로 x_ratio · 세로 y_ratio(비율)를 잘라 같은 모델에 한 번 더 넣는다.
+  # 근거: notebook/safewatch_vehicle_finetune 8·9·10번 셀 (AI Hub 검증 494장, 1920×1080 원본, 2026-11-12).
+  # 먼 차(바닥이 화면 0.58 위) 새 트랙 Recall(conf ≥ 0.5) 320 입력 0.49 → 0.70 (전체 640 입력 0.72), 0.58 아래는 그대로.
+  # 늘어난 '오탐' 대부분(212/267)은 그림으로 보니 라벨이 안 붙은 실제 먼 차였다.
+  # 검출 연산 약 2배(640은 약 4배). ⚠️ 원본 프레임이 모델 입력보다 충분히 커야 효과가 있다 —
+  # 320×320으로 받는 pi5.yaml은 잘라도 새 픽셀이 없어 끈다
+  far_region:
+    enabled: true
+    x_ratio: [0.25, 0.75]
+    y_ratio: [0.30, 0.65]      # 먼 차 바닥(0.42~0.58)이 들어가게
+    edge_ratio: 0.01           # 잘린 경계에서 화면의 이 비율 안쪽까지 닿은 박스는 버림(몸통이 잘린 차)
+    merge_iou: 0.5             # 전체 화면 검출과 이 이상 겹치면 같은 차. 0.3·포개짐 기준은 Recall만 떨어졌다(10번 셀)
 
 lane:
-  roi_top_ratio: 0.55          # 프레임 상단부터 ROI 시작 비율
-  canny_low: 50
-  canny_high: 150
+  # 차선 인식 (src/lane). 방식과 값의 근거는 pipeline-architecture.md 3.3, risk-criteria.md 4.1.
+  # 아래 px 단위 값은 조감도(warp_size 256×384) 기준이다 — warp_size를 바꾸면 함께 다시 맞춘다.
+  # 검증 — notebook/safewatch_lane_calib.ipynb (AI Hub 60_전방 정답 라벨, 2026-11-02)
   lane_width_m: 3.5            # 차로 폭 캘리브레이션 기준
-  min_confidence: 0.5          # 이 미만이면 valid=False → 해당 구간 판정 보류 (IMU 단독 폴백은 스코프 변경으로 폐지)
-  confidence:
-    # 신뢰도 산출 = 피팅 잔차 + 좌우 평행도 + 검출 픽셀 수
-    # (pipeline-architecture.md 3.3, risk-criteria.md 4.1 "차선 인식 신뢰도")
-    #
-    # max_residual_ratio — RMS 피팅 잔차를 차로 폭으로 나눈 비율의 상한.
-    #   초과하면 선이 아니라 면(노면 텍스처)을 피팅한 것으로 보고 신뢰도 0으로 떨어뜨린다.
-    #   근거: 차선 도색 폭을 0.1~0.15m로 가정하면 차로 폭(3.5m) 대비 3~4.3%,
-    #         폭 w인 띠를 직선 피팅했을 때 RMS 잔차는 약 0.29w이므로 이론값은 차로 폭의 0.9~1.3%.
-    #         합성 직선 실측도 1.5%. 곡선·점선·노면 잡음 여유를 고려해 이론값의 약 6배인 8%를 상한으로 둔다.
-    #         S2에서 발견된 보도블록 오탐은 12.7%로 이 상한을 넘는다.
-    #   ⚠️ 차선 도색 폭 수치는 가정이며 실차 영상으로 재튜닝 대상 (sprint-plan S3 "신뢰도 지표 임계값 튜닝")
-    max_residual_ratio: 0.08
-    # 가중치 — 합이 1.0이어야 한다. 잔차를 가장 크게 보는 이유는 S2 오탐에서
-    # 평행도·픽셀 수는 오탐을 걸러내지 못했고 잔차만 10배 가까운 차이를 보였기 때문이다.
-    # 초안 값이며 실차 영상 확보 후 조정한다.
-    weights:
-      residual: 0.4
-      parallel: 0.35
-      pixel: 0.25
+  # 이 미만이면 valid=False → 해당 구간 판정 보류. 0.5 → 0.47 (2026-11-05, 노트북 14번 셀):
+  # 차량 제외를 켠 상태에서 0.45·0.48 모두 원본·320px 검증 오답 0, 틀어짐 통과 0.
+  # 오답 conf 최고 0.428보다 0.04 위. 320px 가용률 14% → 17~19%
+  min_confidence: 0.47
+  vehicle_exclusion:
+    # 검출된 차량 박스를 조감도로 옮겨 차선 후보에서 지운다 (앞차 모서리를 차선으로 오인 방지,
+    # 가려진 윈도는 적중률 분모에서 제외). 노트북 12번 셀 V 방식
+    enabled: true
+    min_box_confidence: 0.25   # 이 이상인 검출만 지운다 — detection.conf_threshold(0.1)의 허위 박스가 차선을 지우지 않게
+    pad_ratio: 0.05            # 박스 좌우를 폭의 이 비율만큼 넓혀 지운다 (차체 모서리·그림자)
+    occluded_window_ratio: 0.5 # 윈도 면적의 이 비율 이상이 차량이면 '가려진 윈도'
+  max_lane_index: 1            # 자차 차로 기준 좌우 몇 차로까지 offset을 잴지. 그 밖은 차선 외삽을 믿을 수 없어 제외
+  # 차선 인식 방식 — opencv(조감도, 아래 perspective~confidence) | ufld(딥러닝, 원본 화면, 아래 ufld).
+  # 합격 기준(docs/lane-detection-dl-plan.md 2장)을 통과하기 전까지 기본은 opencv (AGENTS.md 기술 스택)
+  method: opencv
+  ufld:
+    # UFLDv2 ResNet18 CULane 가중치 (원 저장소 configs/culane_res18.py) → scripts/export_ufld_onnx.py로 변환.
+    # 아래 형상 값은 가중치와 반드시 같아야 한다 — 다르면 시작할 때 에러. 튜닝 대상이 아님
+    model_path: data/models/ufld_culane_res18.onnx
+    num_threads: 4             # ONNX Runtime CPU 스레드 (0 = 기본값). NPU 백엔드가 생기면 무시됨
+    input_size: [1600, 320]    # [width, height]
+    crop_ratio: 0.6            # 화면을 높이 input_h/crop_ratio로 늘린 뒤 아래 input_h만 넣는다
+    grid_num: 200              # 행마다 가로 격자 칸 수
+    num_row: 72                # 행 앵커 수
+    row_anchor_range: [0.42, 1.0]   # 행 앵커 세로 위치 (화면 높이 비율)
+    num_lanes: 4
+    ego_lane_ids: [1, 2]       # 자차 차로 좌·우 차선 번호 (왼쪽부터 0)
+    # 안전장치가 차선을 판정하는 세로 구간 [위, 아래] (화면 높이 비율). 존재 비율·형상·폭을 이 구간에서 본다.
+    # 위 0.68 — 노트북 v2 21·22·25번 셀에서 오답이 가장 적은 범위. 아래 0.98은 정답 라벨 구간 아래 끝
+    guard_range_ratio: [0.68, 0.98]
+    # offset을 재는 세로 구간 [위, 아래]. 차량 바닥이 이 밖이면 재지 않는다. 판정은 위 구간에서 통과한 프레임만.
+    # 위 0.58 — 29번 셀(재학습2, 검증 차량 4110대): 판정 0.68 + 차 바닥 높이에서 바로 재기로 0.58~0.62 차량
+    # 0.25 초과 1대 · 0.62 이하는 0.68 구간과 같은 오차. 앞차의 약 41%를 잰다(0.68이면 14%).
+    # 0.54~0.58은 0.10 초과 7%, 그 위는 12~20%라 제외. 행 앵커 위끝(row_anchor_range[0])보다 아래여야 함
+    measure_range_ratio: [0.58, 0.98]
+    guard:
+      # 안전장치 (src/lane/ufld_guard.py). 근거는 노트북 safewatch_lane_calib_v2.ipynb 19~22번 셀
+      # (AI Hub 검증 시퀀스에서만 고르고, 장착이 다른 카메라는 판정에만 씀). 전부 잠정값 [TBD — 실차 영상 재검증]
+      min_existence: 0.68      # 판정 구간 안 존재 비율 하한 = confidence 하한. 21번 셀 범위 0.68 검증 91%·오답 0
+      min_straddle_margin: 0.0 # 화면 가운데가 예측 차로 안에 있어야 함 (0 = 차로 밖이면 보류). 기하 조건이라 튜닝값 아님
+      width:
+        enabled: true
+        tolerance: 0.25        # 최근 폭 중앙값의 1.25배 초과·1/1.25배 미만이면 보류. 22번 셀 — 국내 차로 폭 차이 ±10~20%, 한 칸 건너뛴 오류는 약 +100%
+        window_sec: 10.0       # 기준 폭(중앙값)을 낼 최근 기록 길이 [TBD — 연속 영상으로 확인]
+        min_samples: 15        # 기록이 이만큼 쌓이기 전에는 보류(보정 중). 15fps에서 약 1초 [TBD]
+      temporal:
+        # 직전 통과 프레임 대비 급변 보류. 띄엄띄엄 뽑은 사진으로는 검증할 수 없어 연속 영상 검증 전까지 끔
+        enabled: false
+        max_center_jump: 0.15  # 차로 중심 이동 / 차로 폭 [TBD]
+        max_width_jump: 0.25   # 폭 변화 비율 [TBD]
+        max_gap_sec: 0.5       # 직전 통과가 이보다 오래되면 비교하지 않음 [TBD]
   perspective:
-    # bird's eye view 변환용 사다리꼴 ROI 네 꼭짓점 (프레임 비율 좌표, [x, y])
-    # 좌상단 → 우상단 → 우하단 → 좌하단 순서.
-    # ⚠️ placeholder 값 — 카메라 장착 위치·화각 확정 후 재캘리브레이션 필요
-    #    (pipeline-architecture.md 5장 "카메라 캘리브레이션 절차" 미결 사항)
-    src_points_ratio: [[0.43, 0.62], [0.57, 0.62], [0.90, 0.95], [0.10, 0.95]]
-    warp_size: [640, 720]      # bird's eye view 출력 해상도 [width, height]
-  color_threshold:
-    s_channel_thresh: [170, 255]   # HLS S채널 — 채도 높은 차선(황색 등) 검출
-    l_channel_thresh: [200, 255]   # HLS L채널 — 밝은 흰색 차선 검출
+    # bird's eye view 변환용 사다리꼴 네 꼭짓점 (프레임 비율 좌표, [x, y]) — 좌상 → 우상 → 우하 → 좌하.
+    # AI Hub 016.도로주행영상 60_전방 정답 라벨에서 보정한 값 (채택 211장, 구간 0.98~0.56).
+    # ⚠️ 우리 카메라 값이 아니다 — 장착 확정 후 같은 절차로 재보정 필요 (pipeline-architecture.md 5장)
+    src_points_ratio: [[0.4385, 0.56], [0.5724, 0.56], [0.8825, 0.98], [0.1325, 0.98]]
+    warp_size: [256, 384]      # bird's eye view 출력 해상도 [width, height]
+    margin_ratio: 0.18         # 사다리꼴을 출력 폭 양옆 이 비율만큼 안쪽으로 매핑 — 옆 차로·갓길도 조감도에 남긴다
+  mask:
+    tophat_width: 31           # 수평 top-hat 커널 폭(px) — 이보다 넓은 밝은 면(보도블록·차체)은 지워진다
+    min_tophat_threshold: 15   # Otsu 임계의 하한 — 어두운 장면에서 잡음까지 차선으로 잡히지 않게
+    white_s_max: 70            # HLS S 상한 — 흰 차선은 무채색. 분홍·초록 색깔 유도선 제외
+    yellow_hls_low: [15, 60, 60]       # 황색 차선 HLS 범위
+    yellow_hls_high: [38, 255, 255]
+    min_component_height: 25   # 세로 성분 필터 — 이 높이(px) 이상이고
+    min_component_aspect: 1.8  #   높이/폭이 이 이상이며
+    min_component_area: 40     #   면적이 이 이상인 연결 성분만 차선 후보 (노면 화살표·문자 제거)
+  peaks:
+    min_height: 10             # 하단 절반 열 히스토그램의 피크 최소 높이(픽셀 수)
+    nms_px: 12                 # 이 거리 안의 피크는 하나로 본다
+    width_range: [0.5, 1.5]    # 시작 쌍으로 인정할 폭 (기대 차로 폭 배수). 최종 판단은 신뢰도의 폭 타당성 항
   sliding_window:
-    n_windows: 9                # 세로 분할 윈도우 개수
-    margin: 80                  # 윈도우 좌우 폭(px)
-    min_pixels: 50               # 윈도우 재중심 갱신에 필요한 최소 픽셀 수
+    n_windows: 10              # 세로 분할 윈도우 개수
+    margin: 35                 # 윈도우 좌우 반폭(px)
+    min_pixels: 30             # 이보다 많은 픽셀이 있어야 그 윈도우를 차선 점으로 쓴다
+  confidence:
+    # 신뢰도 = 윈도 적중률 × 피팅 잔차 × 폭 타당성 (곱 — 하나라도 무너지면 보류)
+    max_rms_ratio: 0.05        # 공유 형상 피팅 RMS 잔차가 기대 차로 폭의 이 비율에 이르면 잔차 항 0
+    width_tolerance: 0.40      # 피팅 차로 폭이 기대 폭에서 이 비율만큼 벗어나면 폭 타당성 항 0
+    outlier_k: 2.5             # 1차 피팅 잔차가 중앙값의 이 배를 넘는 점을 버리고 다시 피팅
+    outlier_min_px: 3.0        #   단, 이 거리(px) 이내는 버리지 않는다
 
 tracking:
   min_tracked_frames: 30       # 관측 충분성 조건 (pipeline-architecture.md 3.4)
   # 아래는 ultralytics 내장 BYTETracker에 그대로 전달하는 값이다.
   # ultralytics 기본값(cfg/trackers/bytetrack.yaml)을 출발점으로 두고,
   # ID switching 빈도를 BDD100K MOT 서브셋으로 측정하며 조정한다 (sprint-plan.md S3).
-  track_high_thresh: 0.25      # 1차 매칭에 쓸 검출 신뢰도 하한
+  track_high_thresh: 0.5       # 1차 매칭에 쓸 검출 신뢰도 하한 — 검출 단독 Precision 0.90 수준 (risk-criteria.md 4.1)
   track_low_thresh: 0.1        # 2차 매칭(가려짐 복구)용 하한
-  new_track_thresh: 0.25       # 새 track 생성 기준 — 높일수록 허위 track 감소
+  new_track_thresh: 0.5        # 새 track 생성 기준 — 높일수록 허위 track 감소. 이전 검출 컷(0.5)과 같은 품질로 트랙을 만든다
   track_buffer: 30             # lost track 유지 프레임 수. 앞차에 가려지는 구간을 버틴다
   match_thresh: 0.8            # IoU 기반 연관 임계값
   fuse_score: true             # 검출 점수를 매칭 비용에 반영
@@ -83,12 +154,17 @@ metrics:
   observation_window_sec: 10.0
   smoothing: moving_average     # moving_average | kalman
   smoothing_window: 5
+  # 차로 배정 히스테리시스 — 차로 내 offset이 0.5 + 이 값을 넘을 때만 차로를 바꾼다.
+  # 선을 밟고 달리는 차량의 offset이 매 프레임 +0.5/−0.5로 뒤집혀 사행으로 세지는 것을 막는다.
+  # 근거 없는 초안 [TBD] (risk-criteria.md 2.1)
+  lane_switch_hysteresis: 0.1
 
 risk:
   # 스코프 변경(2026-09-22, 음주운전 의심 차량 감지) 최종 확정 반영 (2026-09-26).
   # 채택 단서 5종: 차선 걸침·사행·스웨빙·표류(모두 lane offset 기반, risk-criteria.md 1.4)
   # + 속도 불규칙(bbox 팽창률 기반, lane offset과 독립적인 신호, 1.4.1).
-  # 이 섹션을 쓰는 판정 로직(src/risk)은 아직 미구현 — S4에서 구현 시 아래 값을 그대로 읽는다.
+  # 이 섹션을 읽는 쪽 — `src/risk/scorer.py`(단서 5종 판정·가중합산·등급·히스테리시스·쿨다운)와
+  # `src/risk/frame_quality.py`(frame_quality 하위 키). 코드에 임계값을 직접 쓰지 않는다.
   # ⚠️ 대부분 값이 여전히 초안(risk-criteria.md 3.1 [TBD])이며 실차 영상 확보 후 재조정 대상이다.
   min_indicators: 2             # 2개 이상 지표 동시 충족 시 이벤트 생성 (NHTSA 근거)
   observation_window_sec: 10.0
