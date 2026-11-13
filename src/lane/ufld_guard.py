@@ -4,9 +4,9 @@
 아래 검사를 순서대로 하고 하나라도 걸리면 보류(valid=False)한다. 기준값은 전부
 `lane.ufld.guard` 설정에 있고, 근거는 노트북 `safewatch_lane_calib_v2.ipynb` 19~22번 셀이다.
 
-1. 존재 비율 — 측정 구간 안 행 앵커 중 자차 좌·우 차선이 '존재'로 나온 비율의 작은 값.
+1. 존재 비율 — 판정 구간 안 행 앵커 중 자차 좌·우 차선이 '존재'로 나온 비율의 작은 값.
    이 값이 그대로 LaneModel.confidence가 된다 (노트북 `ex_rng`).
-2. 형상 — 측정 구간 위·아래 끝 행에서 좌우 차선 x를 읽을 수 있고 왼쪽 < 오른쪽.
+2. 형상 — 판정 구간 위·아래 끝 행에서 좌우 차선 x를 읽을 수 있고 왼쪽 < 오른쪽.
 3. 걸침 — 화면 가운데(카메라 위치)가 예측 차로 안에 있어야 한다. 자차가 그 차로에 있지 않다면
    그 '자차 차로'는 틀린 것이다 (노트북 20번 셀 `straddle`, 22번 그림 F-1의 1050 사례).
 4. 차로 폭 — 위·아래 두 행의 폭이 최근 window_sec 동안의 폭 중앙값에서 (1+tolerance)배 넘게
@@ -34,17 +34,17 @@ class GuardResult:
     valid: bool
     confidence: float
     reason: str | None           # 보류 이유 — None이면 통과
-    width_px: float | None       # 측정 구간 아래 끝 행의 차로 폭(px)
+    width_px: float | None       # 판정 구간 아래 끝 행의 차로 폭(px)
 
 
 class LaneGuard:
     """프레임마다 check()를 부른다. 차로 폭 기록과 직전 통과 값을 상태로 갖는다."""
 
-    def __init__(self, guard_cfg: Config, row_anchor: np.ndarray, measure_range_ratio: tuple[float, float]):
+    def __init__(self, guard_cfg: Config, row_anchor: np.ndarray, guard_range_ratio: tuple[float, float]):
         self._row_anchor = np.asarray(row_anchor, dtype=np.float64)
-        self._top_ratio, self._bottom_ratio = (float(v) for v in measure_range_ratio)
+        self._top_ratio, self._bottom_ratio = (float(v) for v in guard_range_ratio)
         if not 0.0 <= self._top_ratio < self._bottom_ratio <= 1.0:
-            raise ValueError(f"lane.ufld.measure_range_ratio가 잘못됐습니다: {measure_range_ratio}")
+            raise ValueError(f"lane.ufld.guard_range_ratio가 잘못됐습니다: {guard_range_ratio}")
 
         self._min_existence: float = guard_cfg.min_existence
         self._min_straddle_margin: float = guard_cfg.min_straddle_margin

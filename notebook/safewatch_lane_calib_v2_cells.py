@@ -3633,7 +3633,8 @@ MODELS25 = {'사전학습': UFLD25 / 'culane_res18.pth',
             '재학습':   UFLD25 / 'ufld_aihub_ft.pth',       # 1차 (26번 셀 첫 실행, 뒤집기·밝기만)
             '재학습2':  UFLD25 / 'ufld_aihub_aug.pth',     # 2차 (기하 증강 12에폭)
             '재학습3':  UFLD25 / 'ufld_aihub_aug24.pth',   # 3차 (기하 증강 24에폭)
-            '재학습4':  UFLD25 / 'ufld_aihub_clean.pth'}   # 4차 (2차 + 가짜 옆 차선 라벨 정리)
+            '재학습4':  UFLD25 / 'ufld_aihub_clean.pth',   # 4차 (2차 + 가짜 옆 차선 라벨 정리)
+            '재학습5':  UFLD25 / 'ufld_aihub_far.pth'}     # 5차 (2차 + 먼 행 가중, 30번 셀)
 EVAL25   = Path('/content/lane_eval_v60')              # 세션 로컬
 BACKUP25 = DRIVE_ROOT / 'lane_eval_v60.tar'            # 드라이브 백업 — 다음엔 압축만 푼다
 MIS25    = '20200916'
@@ -4379,3 +4380,569 @@ h = hashlib.sha256(OUT28.read_bytes()).hexdigest()
 print(f'드라이브 저장: {OUT28} ({OUT28.stat().st_size / 1e6:.0f}MB)')
 print(f'SHA-256: {h}')
 print('→ 드라이브에서 이 파일을 공유 링크로 넘기고, Pi5에서는 data/models/ufld_aihub_aug.onnx 로 둔다')
+
+
+# ============================== 29번 셀 ==============================
+# 29. 화면에 보이는 앞차를 다 재려면 — 차량마다 offset 오차를 높이별로 재서 방법 비교
+# 필요: 25번 셀 실행 (FR25·PRED25·guard25·BOT25·ERR25·x_at·DEV25 사용). GPU 권장(차량 검출), 몇 분.
+#
+# 왜: 지금은 차량 바닥이 화면 높이 0.68~0.98(측정 구간) 안일 때만 offset을 잰다 → 19번 셀 기준 앞차의 약 14%만 잰다.
+#     25번은 '구간 전체 행의 최대 오차'로 차선만 채점했다. 여기서는 실제로 필요한 것 —
+#     **차량 한 대 한 대의 offset 오차**(그 차 바닥 높이에서 예측 차로 중심 대비 위치 − 정답 차로 기준 위치)를 높이별로 잰다.
+#
+# 비교하는 방법 (전부 같은 모델·같은 차량·같은 정답)
+#   지금      : 판정 구간 = 측정 구간 = [위끝, 0.98]. 차 바닥이 구간 밖이면 안 잰다. 위끝 0.68 / 0.64 / 0.60
+#   ① 직접    : 판정(안전장치)은 가까운 구간 [0.68, 0.98]에서만 하고, 통과한 프레임이면 차 바닥 높이의 예측 차선으로 바로 잰다
+#              (모델은 화면 높이 0.42까지 차선을 낸다). 높이별 오차 표가 곧 '높이별로 믿는 정도'(가중치·허용치)의 근거
+#   ① 연장    : 판정은 같고, 가까운 구간의 예측 차선 점들을 직선으로 맞춰 차 바닥 높이까지 늘려서 잰다
+#              (원근에서 직선 도로의 차선은 화면에서도 직선. 곡선이면 틀어진다 — 표로 확인)
+#   ② 시간 평균: 정답 사진이 1초 간격이라 연속 영상 평균은 여기서 직접 못 잰다. 대신 높이별 차선 오차가 1초 뒤에도
+#              같은 방향으로 남는지(상관) 본다 — 상관이 크면 '고정 치우침'이라 평균 내도 안 줄고, 작으면 평균이 줄여 준다.
+#   ③ 먼 곳 재학습: 학습이 필요해 이 셀에서는 안 한다. 이 표에서 어느 높이가 얼마나 틀리는지 보고 정한다.
+#
+# 오차 기준(ERR25): 0.10 = 사행 진폭 기준(risk.weaving.min_amplitude_ratio) · 0.15 = 표류 · 0.25 = 걸침
+import numpy as np, cv2
+from collections import defaultdict
+
+MODEL29  = '재학습2'                                  # 채택 모델 (Pi용 ONNX와 같은 가중치)
+NEAR29   = 0.68                                      # ①의 판정 구간 위끝 (지금 설정)
+CUTS29   = [0.68, 0.64, 0.60]                        # '지금' 방식의 위끝 후보
+BINS29   = [0.42, 0.50, 0.54, 0.58, 0.62, 0.66, 0.70, 0.80, 0.98]   # 차 바닥 높이 구간 (화면 높이 비율)
+CONF29   = 0.25                                      # 차량 검출 신뢰도 하한 (19번 셀과 같음)
+LANES29  = 1.5                                       # 정답 offset |값| ≤ 이 값인 차만 (자차·옆 차로)
+N_SHOW29 = 3
+
+if MODEL29 not in PRED25:
+    raise SystemExit(f'25번 셀에 {MODEL29} 결과가 없음 — MODELS25·모델 파일 확인')
+
+# ── 차량 검출 (COCO 가중치, 차·버스·트럭) ──
+try:
+    from ultralytics import YOLO
+except ImportError:
+    import subprocess, sys
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'ultralytics'], check=True)
+    from ultralytics import YOLO
+det29 = YOLO('yolov8n.pt')
+if 'VEH29' not in globals():
+    VEH29, t0 = {}, time.time()
+    for i in range(0, len(FR25), 32):
+        batch = FR25[i:i + 32]
+        rs = det29.predict([str(f['ip']) for f in batch], imgsz=640, conf=CONF29, classes=[2, 5, 7],
+                           verbose=False, device=0 if DEV25 == 'cuda' else 'cpu')
+        for f, r in zip(batch, rs):
+            VEH29[f['key']] = r.boxes.xyxy.cpu().numpy()
+    print(f'차량 검출 {len(VEH29)}장 {time.time() - t0:.0f}초 · 차량 {sum(len(v) for v in VEH29.values())}대')
+
+
+def fit_line29(pts, y0, y1):
+    """y0~y1 안의 점으로 x = a·y + b 직선. 점 4개 미만이면 None"""
+    q = [(x, y) for x, y in pts if y0 <= y <= y1]
+    if len(q) < 4:
+        return None
+    ys, xs = np.array([p[1] for p in q]), np.array([p[0] for p in q])
+    return np.polyfit(ys, xs, 1) if np.ptp(ys) > 1 else None
+
+
+def offset29(xl, xr, cx):
+    return None if xl is None or xr is None or xr - xl <= 1 else (cx - (xl + xr) / 2) / (xr - xl)
+
+
+# ── 차량별 기록 ──
+REC29 = []          # 차량 한 대 = 한 줄
+LANE29 = []         # 프레임 · 높이별 차선 중심 오차(부호 있음) — ②용
+for mis in (False, True):
+    g_near, g_cut, cur = None, {}, None
+    for f in FR25:
+        if f['mis'] != mis:
+            continue
+        if f['seq'] != cur:
+            g_near, cur = guard25(NEAR29, False), f['seq']
+            g_cut = {c: guard25(c, False) for c in CUTS29}
+        L, R, w, h = PRED25[MODEL29][f['key']]
+        t = f['idx'] / 30.0
+        ok_near = g_near.check(L, R, w, h, t).valid
+        ok_cut = {c: g_cut[c].check(L, R, w, h, t).valid for c in CUTS29}
+        s = w / f['W']
+        gl_pts = [(x * s, y * s) for x, y in f['l4'][1][3]]
+        gr_pts = [(x * s, y * s) for x, y in f['l4'][2][3]]
+        fl = fit_line29(L, NEAR29 * h, BOT25 * h) if len(L) else None
+        fr = fit_line29(R, NEAR29 * h, BOT25 * h) if len(R) else None
+        # ②용 — 높이마다 예측 차로 중심 오차 (판정 통과 프레임만)
+        if ok_near:
+            for yr in np.arange(0.44, 0.99, 0.02):
+                y = yr * h
+                gl, gr = x_at(gl_pts, y), x_at(gr_pts, y)
+                pl, pr = (x_at(L, y) if len(L) >= 2 else None), (x_at(R, y) if len(R) >= 2 else None)
+                if None not in (gl, gr, pl, pr) and gr - gl > 1:
+                    LANE29.append(dict(seq=f['seq'], idx=f['idx'], mis=mis, yr=round(float(yr), 2),
+                                       e=((pl + pr) / 2 - (gl + gr) / 2) / (gr - gl)))
+        for x1, y1, x2, y2 in VEH29.get(f['key'], []):
+            cx, yb = (x1 + x2) / 2, float(y2)
+            if yb > BOT25 * h:
+                continue
+            gt = offset29(x_at(gl_pts, yb), x_at(gr_pts, yb), cx)
+            if gt is None or abs(gt) > LANES29:
+                continue
+            direct = offset29(x_at(L, yb) if len(L) >= 2 else None, x_at(R, yb) if len(R) >= 2 else None, cx)
+            ext = offset29(np.polyval(fl, yb) if fl is not None else None,
+                           np.polyval(fr, yb) if fr is not None else None, cx)
+            row = dict(f=f, mis=mis, yr=yb / h, gt=gt, ego=abs(gt) <= 0.5, box=(x1, y1, x2, y2))
+            for c in CUTS29:                                   # 지금 방식
+                row[f'지금 {c}'] = direct if (ok_cut[c] and c * h <= yb) else None
+            row['① 직접'] = direct if ok_near else None
+            row['① 연장'] = ext if ok_near else None
+            REC29.append(row)
+
+METHODS29 = [f'지금 {c}' for c in CUTS29] + ['① 직접', '① 연장']
+print(f'\n정답 차로 기준 위치를 알 수 있는 차량 {len(REC29)}대 (검증 {sum(not r["mis"] for r in REC29)} · '
+      f'틀어짐 {sum(r["mis"] for r in REC29)}) — 자차·옆 차로(|offset| ≤ {LANES29}), 정답 차선이 그 높이까지 있는 차만')
+
+
+def stat29(rows, m):
+    e = np.array([abs(r[m] - r['gt']) for r in rows if r[m] is not None])
+    n = len(rows)
+    if len(e) == 0:
+        return f'{0:>4}% {"-":>6} {"-":>11}'
+    c = [int((e > t).sum()) for t in ERR25]
+    return f'{len(e) / max(n, 1) * 100:>4.0f}% {np.median(e):>6.3f} {c[0]:>3}/{c[1]:>3}/{c[2]:>3}'
+
+
+print('\n' + '═' * 120)
+print('칸 = 잰 비율(그 높이 차량 중) · 오차 중앙값 · 0.10/0.15/0.25 초과 대수     오차 = |예측 offset − 정답 offset| (차로 폭 단위)')
+print('═' * 120)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    rows_all = [r for r in REC29 if r['mis'] == mis]
+    print(f'\n▶ {tag} — 차 바닥 높이별 (위 = 멀리)')
+    print(f'  {"높이":<11}{"대수":>5}' + ''.join(f'{m:>24}' for m in METHODS29))
+    for a, b in zip(BINS29[:-1], BINS29[1:]):
+        rows = [r for r in rows_all if a <= r['yr'] < b]
+        print(f'  {a:.2f}~{b:.2f}{len(rows):>6}' + ''.join(f'{stat29(rows, m):>24}' for m in METHODS29))
+    for sub, cond in (('전체', lambda r: True), ('자차 차로만', lambda r: r['ego'])):
+        rows = [r for r in rows_all if cond(r)]
+        print(f'  {sub:<10}{len(rows):>6}' + ''.join(f'{stat29(rows, m):>24}' for m in METHODS29))
+
+# ── ② 시간 평균이 도울까 — 1초 뒤 같은 높이 차선 오차의 상관 ──
+print('\n' + '═' * 120)
+print('② 높이별 차선 중심 오차(부호 있음)의 1초 뒤 상관 · 오차 크기  — 상관이 1에 가까우면 고정 치우침(평균으로 안 줄어듦)')
+print('═' * 120)
+by29 = defaultdict(dict)
+for d in LANE29:
+    by29[(d['mis'], d['seq'], d['yr'])][d['idx']] = d['e']
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"높이":<11}{"표본":>6}{"|오차| 중앙":>11}{"p90":>8}{"1초 뒤 상관":>12}{"쌍":>6}')
+    for a, b in zip(BINS29[:-1], BINS29[1:]):
+        es, pa, pb = [], [], []
+        for (m_, sq, yr), d in by29.items():
+            if m_ != mis or not (a <= yr < b):
+                continue
+            es += list(d.values())
+            for i, e in d.items():
+                if i + 30 in d:
+                    pa.append(e); pb.append(d[i + 30])
+        if not es:
+            continue
+        es = np.abs(np.array(es))
+        corr = np.corrcoef(pa, pb)[0, 1] if len(pa) >= 10 else float('nan')
+        print(f'  {a:.2f}~{b:.2f}{len(es):>7}{np.median(es):>11.3f}{np.percentile(es, 90):>8.3f}{corr:>12.2f}{len(pa):>6}')
+
+# ── 그림 — ① 직접에서 오차가 큰 먼 차량 ──
+bad29 = sorted([r for r in REC29 if r['① 직접'] is not None and r['yr'] < NEAR29
+                and abs(r['① 직접'] - r['gt']) > ERR25[0]], key=lambda r: -abs(r['① 직접'] - r['gt']))
+print(f'\n① 직접 · 판정 구간 위(먼 차)에서 0.10 초과 {len(bad29)}대 — 최대 {N_SHOW29}대 표시')
+for r in bad29[:N_SHOW29]:
+    f = r['f']; L, R, w, h = PRED25[MODEL29][f['key']]
+    vis = cv2.imread(str(f['ip'])); s = w / f['W']
+    for k in (1, 2):
+        q = np.int32([(x * s, y * s) for x, y in sorted(f['l4'][k][3], key=lambda t: t[1])])
+        cv2.polylines(vis, [q], False, (255, 255, 0), 3)
+    for ln, col in ((L, (0, 0, 255)), (R, (0, 255, 0))):
+        for x, y in ln:
+            cv2.circle(vis, (int(x), int(y)), 4, col, -1)
+    x1, y1, x2, y2 = map(int, r['box'])
+    cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 0, 255), 3)
+    cv2.line(vis, (0, int(NEAR29 * h)), (int(w), int(NEAR29 * h)), (0, 255, 255), 2)
+    ext = '-' if r['① 연장'] is None else f"{r['① 연장']:+.2f}"
+    plt.figure(figsize=(12, 6.5)); plt.imshow(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)); plt.axis('off')
+    plt.title(f'[29] {f["key"]}  car bottom {r["yr"]:.2f}  gt {r["gt"]:+.2f} · direct {r["① 직접"]:+.2f} · ext {ext}\n'
+              'cyan = label ego lanes  red/green = pred  magenta = car  yellow line = guard band top', fontsize=9)
+    plt.show()
+
+
+# ============================== 30번 셀 ==============================
+# 30. 먼 곳 재학습 (5차) — 2차와 같은 학습에 '먼 행 가중'만 더한다
+# 필요: 1번 셀만 (DRIVE_ROOT). **GPU 런타임**. 드라이브에 2차 학습 데이터 ufld_aihub2.tar(26번 2차 실행 때 만든 백업)가 있어야 한다.
+#
+# 왜: 29번 셀 — 차 바닥이 화면 높이 0.58보다 먼 차는 offset 오차 0.10 초과가 7~20%라 지금은 안 잰다(앞차 약 59%를 못 잼).
+# 하는 일: 저장소 scripts/train_ufld.py 그대로 실행. 바뀐 것은 configs/ufld_train.yaml train.far_rows 하나 —
+#   행 앵커가 화면 높이 0.58보다 위(먼 쪽)인 행의 위치 손실에 FAR_W30배 가중. 에폭 선택 손실도 같은 가중으로 잰다.
+#   그 외(데이터·기하 증강·12에폭)는 채택 모델 2차와 같다 → 차이는 가중 하나 때문.
+# 결과: 드라이브 ufld/ufld_aihub_far.pth (2차 ufld_aihub_aug.pth는 그대로). A100 약 45분. 끊기면 그대로 다시 실행 = 이어 하기.
+# 다음: 25번 셀 MODELS25에 '재학습5' 줄을 넣고 25 → 29 → 31번 셀.
+import os, sys, subprocess, tarfile, time, json
+from pathlib import Path
+
+FAR_W30   = 3.0                                      # 먼 행 가중 [시험값 — 31번 결과로 정한다]
+FAR_BELOW30 = 0.58                                   # 지금 측정 위끝 (configs/default.yaml measure_range_ratio)
+REPO30    = Path('/content/SafeWatch_AI')
+BRANCH30  = 'feature/lane-ufld'
+UFLD30    = DRIVE_ROOT / 'ufld'
+PRETRAIN30 = UFLD30 / 'culane_res18.pth'
+DATA30    = Path('/content/ufld_aihub2')
+BACKUP30  = DRIVE_ROOT / 'ufld_aihub2.tar'           # 2차 학습 데이터 (형식 2, 옆 차선 정리 전 = 2차와 같은 데이터)
+OUT30     = UFLD30 / 'ufld_aihub_far.pth'
+EPOCHS30  = 12
+CPU30     = os.cpu_count() or 2
+
+try:
+    import torch
+    assert torch.cuda.is_available()
+    print('GPU:', torch.cuda.get_device_name(0), '· CPU', CPU30)
+except AssertionError:
+    raise SystemExit('GPU 런타임이 아닙니다 — 런타임 > 런타임 유형 변경 > GPU')
+
+# ── 저장소 (25·26번과 같은 방식) ──
+if not REPO30.exists():
+    subprocess.run(['git', 'clone', '-q', '-b', BRANCH30,
+                    'https://github.com/26-2-Paran-SafeWatch/SafeWatch_AI.git', str(REPO30)], check=True)
+else:
+    for cmd in (['fetch', '-q', 'origin', BRANCH30], ['checkout', '-q', BRANCH30], ['reset', '-q', '--hard', f'origin/{BRANCH30}']):
+        subprocess.run(['git', '-C', str(REPO30), *cmd], check=True)
+print('저장소:', subprocess.run(['git', '-C', str(REPO30), 'log', '-1', '--oneline'], capture_output=True, text=True).stdout.strip())
+if 'far_row_weights' not in (REPO30 / 'scripts/train_ufld.py').read_text():
+    raise SystemExit('저장소에 먼 행 가중 코드가 아직 없음 — feature/lane-ufld 푸시 확인')
+
+# ── 데이터 (2차 백업에서 복원) ──
+if not (DATA30 / 'manifest.json').exists():
+    if not BACKUP30.exists():
+        raise SystemExit(f'{BACKUP30} 없음 — 2차 학습 데이터 백업. 드라이브에서 이름 확인')
+    print(f'데이터 복원 — {BACKUP30.name} ({BACKUP30.stat().st_size / 1e9:.1f}GB)')
+    t = time.time()
+    with tarfile.open(BACKUP30) as tf:
+        tf.extractall(DATA30.parent)
+    print(f'  {time.time() - t:.0f}초')
+man30 = json.loads((DATA30 / 'manifest.json').read_text())
+if man30.get('format') != 2:
+    raise SystemExit(f'{DATA30}는 옛 형식 — 2차 데이터가 아님')
+print('학습', man30['splits']['train'], '· 선택용', man30['splits']['val'])
+
+# ── 학습 ──
+if not PRETRAIN30.exists():
+    raise SystemExit(f'{PRETRAIN30} 없음 — 15번 셀에서 받은 CULane 가중치')
+import yaml
+tc30 = yaml.safe_load((REPO30 / 'configs/ufld_train.yaml').read_text())
+tc30['train']['num_workers'] = min(int(tc30['train']['num_workers']), CPU30)
+tc30['train']['epochs'] = EPOCHS30
+tc30['train']['far_rows'] = {'below': FAR_BELOW30, 'weight': FAR_W30}
+cfg30 = Path('/content/ufld_train_far.yaml')
+cfg30.write_text(yaml.safe_dump(tc30, allow_unicode=True))
+print(f"\n학습 — 배치 {tc30['train']['batch_size']} · 에폭 {EPOCHS30} · 먼 행 가중 {tc30['train']['far_rows']} · 저장 {OUT30}")
+OUT30.parent.mkdir(parents=True, exist_ok=True)
+p = subprocess.Popen([sys.executable, '-u', '-m', 'scripts.train_ufld', '--data', str(DATA30), '--weights', str(PRETRAIN30),
+                      '--out', str(OUT30), '--train-config', str(cfg30), '--resume'],
+                     cwd=REPO30, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+for line in p.stdout:
+    print(line, end='')
+if p.wait() != 0:
+    raise SystemExit(f'실패 (종료 코드 {p.returncode}) — 위 출력 확인')
+
+hist = json.loads(OUT30.with_name(OUT30.stem + '_history.json').read_text())
+key30 = 'val_aug_loss' if tc30['train']['select_by'] == 'aug' else 'val_loss'
+best = min(hist, key=lambda h: h[key30])
+print('\n' + '═' * 80)
+print(f'{"에폭":>4} {"학습 손실":>10} {"선택용 손실":>11} {"증강 건 선택용":>14}   (먼 행 가중 손실이라 2차 숫자와 직접 비교 안 됨)')
+for h in hist:
+    tl = '-' if h['train_loss'] is None else f"{h['train_loss']:.4f}"
+    va = '-' if h.get('val_aug_loss') is None else f"{h['val_aug_loss']:.4f}"
+    print(f"{h['epoch']:>4} {tl:>10} {h['val_loss']:>11.4f} {va:>14}" + ('  ← 최저' if h is best else ''))
+print(f'저장: {OUT30}' if OUT30.exists() else '어느 에폭도 사전학습보다 나아지지 않아 저장 안 됨')
+print("다음: 25번 셀 MODELS25에 '재학습5': UFLD25 / 'ufld_aihub_far.pth' 넣고 25 → 29 → 31번")
+print('═' * 80)
+
+
+# ============================== 31번 셀 ==============================
+# 31. 먼 곳 재학습(30번) 효과 — 차량마다 offset 오차를 높이별로, 재학습2 vs 재학습5
+# 필요: 25번 셀(MODELS25에 '재학습5' 넣고) → 29번 셀을 이 세션에서 먼저 실행 (VEH29·offset29·guard25 등을 그대로 쓴다)
+#
+# 방식은 지금 실행 코드와 같다: 판정(안전장치)은 0.68~0.98, 통과한 프레임이면 차 바닥 높이의 예측 차선으로 바로 잰다.
+# 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수.  보는 것:
+#   · 0.58 위(먼 차) 행 — 재학습5의 0.10 초과가 줄었나  → 줄었으면 측정 위끝을 더 올릴 근거
+#   · 0.58 아래(지금 재는 차) 행 — 재학습5가 나빠지지 않았나 → 나빠졌으면 채택 불가
+import numpy as np
+
+MODELS31 = ['재학습2', '재학습5']
+NEAR31   = 0.68
+SPLIT31  = 0.58                                       # 지금 측정 위끝
+
+if 'VEH29' not in globals() or 'offset29' not in globals():
+    raise SystemExit('29번 셀을 이 세션에서 먼저 실행하세요 (차량 검출 결과 VEH29를 쓴다)')
+miss31 = [m for m in MODELS31 if m not in PRED25]
+if miss31:
+    raise SystemExit(f'25번 셀에 {miss31} 결과가 없음 — MODELS25에 넣고 25번부터 다시')
+
+
+def rec31(model):
+    """차량 한 대 = (틀어짐?, 차 바닥 높이 비율, 오차 또는 None(판정 보류))"""
+    out = []
+    for mis in (False, True):
+        g, cur = None, None
+        for f in FR25:
+            if f['mis'] != mis:
+                continue
+            if f['seq'] != cur:
+                g, cur = guard25(NEAR31, False), f['seq']
+            L, R, w, h = PRED25[model][f['key']]
+            ok = g.check(L, R, w, h, f['idx'] / 30.0).valid
+            s = w / f['W']
+            gl = [(x * s, y * s) for x, y in f['l4'][1][3]]
+            gr = [(x * s, y * s) for x, y in f['l4'][2][3]]
+            for x1, y1, x2, y2 in VEH29.get(f['key'], []):
+                cx, yb = (x1 + x2) / 2, float(y2)
+                if yb > BOT25 * h:
+                    continue
+                gt = offset29(x_at(gl, yb), x_at(gr, yb), cx)
+                if gt is None or abs(gt) > LANES29:
+                    continue
+                d = offset29(x_at(L, yb) if len(L) >= 2 else None, x_at(R, yb) if len(R) >= 2 else None, cx) if ok else None
+                out.append((mis, yb / h, None if d is None else abs(d - gt)))
+    return out
+
+
+def cell31(rows):
+    if not rows:
+        return f'{"-":>27}'
+    e = np.array([r[2] for r in rows if r[2] is not None])
+    if len(e) == 0:
+        return f'{"0%":>5} {"-":>6} {"-":>13}'
+    c = [int((e > t).sum()) for t in ERR25]
+    return f'{len(e) / len(rows) * 100:>4.0f}% {np.median(e):>6.3f} {c[0]:>4}/{c[1]:>4}/{c[2]:>4}'
+
+
+R31 = {m: rec31(m) for m in MODELS31}
+print('═' * 100)
+print(f'칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수   (판정 {NEAR31}~{BOT25}, 차 바닥 높이에서 바로 잼)')
+print('═' * 100)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}{"대수":>6}' + ''.join(f'{m:>28}' for m in MODELS31))
+    groups = [(f'{a:.2f}~{b:.2f}', lambda y, a=a, b=b: a <= y < b) for a, b in zip(BINS29[:-1], BINS29[1:])]
+    groups += [(f'{SPLIT31} 위 (먼 차)', lambda y: y < SPLIT31), (f'{SPLIT31} 이하 (지금 잼)', lambda y: y >= SPLIT31)]
+    for name, cond in groups:
+        rows = {m: [r for r in R31[m] if r[0] == mis and cond(r[1])] for m in MODELS31}
+        n = len(rows[MODELS31[0]])
+        print(f'  {name:<13}{n:>6}' + ''.join(f'{cell31(rows[m]):>28}' for m in MODELS31))
+print('\n같은 차량·같은 정답 — 대수는 모델끼리 같고, 잰 비율 차이는 판정 통과율 차이다.')
+
+
+# ============================== 32번 셀 ==============================
+# 32. 먼 곳 확대 추론 — 소실점 기준으로 화면을 확대해 차선 모델에 한 번 더 넣으면 먼 차 offset이 정확해지나
+# 필요: 25번 → 29번 셀을 이 세션에서 먼저 실행 (PRED25·VEH29·offset29·fit_line29·guard25 등). GPU, 모델 하나당 2~3분.
+#
+# 왜: 30·31번(먼 행 가중 재학습)은 먼 곳 오차를 조금만 줄였다. 남은 가설 = 해상도 — 모델 입력(1600×320)에서
+#     먼 곳 차로는 몇십 픽셀뿐이다. 학습 없이 입력만 키워서 이 가설을 직접 확인한다.
+# 방법: 1) 원본으로 한 번 추론(지금과 같음) → 가까운 구간(0.68~0.98) 좌우 차선을 직선으로 맞춰 교점 = 소실점
+#       2) 소실점을 중심으로 Z배 확대한 화면을 같은 모델에 다시 넣는다. 소실점을 지나는 직선은 이 확대에서 그대로 직선이라
+#          확대 화면도 '같은 도로를 더 멀리서 본 장면'처럼 보인다(학습 때 확대 0.8~1.2 증강과 같은 종류의 변환).
+#          원본 사진(1920×1080)을 1600폭으로 줄여 넣는 지금과 달리, 확대하면 먼 곳의 원본 픽셀이 실제로 더 들어간다.
+#       3) 확대 화면의 예측 점을 원래 좌표로 되돌려, 차 바닥 높이에서 offset을 잰다. 판정(안전장치)은 1)의 결과 그대로.
+#       실행에 넣으면 프레임마다 차선 추론이 2번 — NPU 예산 문제는 결과를 보고 따진다.
+# 비교: 원본(① 직접 = 지금 실행 코드) vs 확대 Z배. 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수 (31번과 같은 정의)
+import numpy as np, cv2, torch, time
+
+MODEL32 = '재학습2'                                   # 채택 모델
+ZOOMS32 = [1.5, 2.0]
+NEAR32  = 0.68
+VP_X32  = (0.25, 0.75)                               # 소실점이 이 범위(화면 비율) 밖이면 그 프레임은 확대 안 함(차선 이상)
+VP_Y32  = (0.25, 0.55)
+
+for need in ('VEH29', 'offset29', 'fit_line29', 'PRED25'):
+    if need not in globals():
+        raise SystemExit('25번 → 29번 셀을 이 세션에서 먼저 실행하세요')
+if MODEL32 not in PRED25:
+    raise SystemExit(f'25번 셀에 {MODEL32} 결과가 없음')
+
+
+def vp32(L, R, h):
+    """가까운 구간 좌우 차선 직선의 교점 (x, y) 또는 None"""
+    fl = fit_line29(L, NEAR32 * h, BOT25 * h) if len(L) else None
+    fr = fit_line29(R, NEAR32 * h, BOT25 * h) if len(R) else None
+    if fl is None or fr is None or abs(fl[0] - fr[0]) < 1e-6:
+        return None
+    y = (fr[1] - fl[1]) / (fl[0] - fr[0])            # x = a·y + b 두 직선의 교점
+    return float(np.polyval(fl, y)), float(y)
+
+
+VP32 = {}
+for f in FR25:
+    L, R, w, h = PRED25[MODEL32][f['key']]
+    v = vp32(L, R, h)
+    if v is not None and VP_X32[0] * w <= v[0] <= VP_X32[1] * w and VP_Y32[0] * h <= v[1] <= VP_Y32[1] * h:
+        VP32[f['key']] = v
+print(f'소실점 구함 {len(VP32)}/{len(FR25)}장 (나머지는 확대 안 함 → 그 프레임 먼 차는 "못 잼")')
+
+
+@torch.no_grad()
+def infer_zoom32(path, z):
+    """소실점 중심 z배 확대 화면으로 추론 → 원래 좌표로 되돌린 (좌, 우) 차선 점"""
+    net = UFLDv2RowNet(SPEC25, grid_col=100, num_col=81, fc_norm=True)
+    load_weights(net, path)
+    net.keep_rows_only()
+    net = net.eval().to(DEV25)
+    keys = [f for f in FR25 if f['key'] in VP32]
+    out, t0 = {}, time.time()
+    for i in range(0, len(keys), BS25):
+        batch = keys[i:i + BS25]
+        imgs = []
+        for f in batch:
+            b = cv2.imread(str(f['ip']))
+            hh, ww = b.shape[:2]
+            s = ww / PRED25[MODEL32][f['key']][2]      # 25번 예측 좌표 → 이 사진 좌표 (보통 1)
+            vx, vy = VP32[f['key']][0] * s, VP32[f['key']][1] * s
+            M = np.float32([[z, 0, (1 - z) * vx], [0, z, (1 - z) * vy]])
+            imgs.append((cv2.warpAffine(b, M, (ww, hh), flags=cv2.INTER_LINEAR), vx, vy, s))
+        x = torch.from_numpy(np.concatenate([preprocess(b, SPEC25) for b, *_ in imgs])).to(DEV25)
+        loc, ex = net(x)
+        loc, ex = loc.float().cpu().numpy(), ex.float().cpu().numpy()
+        for j, (f, (b, vx, vy, s)) in enumerate(zip(batch, imgs)):
+            hh, ww = b.shape[:2]
+            lanes = decode_rows(loc[j], ex[j], SPEC25, ww, hh)
+            back = []
+            for k in (1, 2):
+                p = lanes[k]
+                q = np.c_[vx + (p[:, 0] - vx) / z, vy + (p[:, 1] - vy) / z] / s if len(p) else p
+                back.append(q[np.argsort(q[:, 1])] if len(q) else q)
+            out[f['key']] = tuple(back)
+    print(f'  확대 {z}배: {len(out)}장 {time.time() - t0:.0f}초')
+    del net
+    if DEV25 == 'cuda':
+        torch.cuda.empty_cache()
+    return out
+
+
+if 'ZPRED32' not in globals():
+    ZPRED32 = {}
+for z in ZOOMS32:
+    if z not in ZPRED32:
+        ZPRED32[z] = infer_zoom32(MODELS25[MODEL32], z)
+
+
+def xa32(pts, y):
+    """점 범위 안에서만 (확대 화면은 원래 화면의 위쪽 일부만 덮는다 — 밖으로 연장하지 않음)"""
+    if len(pts) < 2 or not (pts[0, 1] <= y <= pts[-1, 1]):
+        return None
+    return x_at(pts, y)
+
+
+METHODS32 = ['원본(지금)'] + [f'확대 {z}배' for z in ZOOMS32]
+REC32 = []
+for mis in (False, True):
+    g, cur = None, None
+    for f in FR25:
+        if f['mis'] != mis:
+            continue
+        if f['seq'] != cur:
+            g, cur = guard25(NEAR32, False), f['seq']
+        L, R, w, h = PRED25[MODEL32][f['key']]
+        ok = g.check(L, R, w, h, f['idx'] / 30.0).valid
+        s = w / f['W']
+        gl = [(x * s, y * s) for x, y in f['l4'][1][3]]
+        gr = [(x * s, y * s) for x, y in f['l4'][2][3]]
+        for x1, y1, x2, y2 in VEH29.get(f['key'], []):
+            cx, yb = (x1 + x2) / 2, float(y2)
+            if yb > BOT25 * h:
+                continue
+            gt = offset29(x_at(gl, yb), x_at(gr, yb), cx)
+            if gt is None or abs(gt) > LANES29:
+                continue
+            row = dict(mis=mis, yr=yb / h)
+            d = offset29(x_at(L, yb) if len(L) >= 2 else None, x_at(R, yb) if len(R) >= 2 else None, cx) if ok else None
+            row['원본(지금)'] = None if d is None else abs(d - gt)
+            for z in ZOOMS32:
+                zl = ZPRED32[z].get(f['key'])
+                d = offset29(xa32(zl[0], yb), xa32(zl[1], yb), cx) if (ok and zl is not None) else None
+                row[f'확대 {z}배'] = None if d is None else abs(d - gt)
+            REC32.append(row)
+
+
+def cell32(rows, m):
+    if not rows:
+        return f'{"-":>27}'
+    e = np.array([r[m] for r in rows if r[m] is not None])
+    if len(e) == 0:
+        return f'{"0%":>5} {"-":>6} {"-":>14}'
+    c = [int((e > t).sum()) for t in ERR25]
+    return f'{len(e) / len(rows) * 100:>4.0f}% {np.median(e):>6.3f} {c[0]:>4}/{c[1]:>4}/{c[2]:>4}'
+
+
+print('\n' + '═' * 110)
+print(f'[{MODEL32}] 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수   (판정은 전부 원본 추론 {NEAR32}~{BOT25})')
+print('확대 화면은 원래 화면 위쪽 일부만 덮는다 → 가까운 차는 확대 방식으로 못 잴 수 있음(실제로는 원본으로 잼)')
+print('═' * 110)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}{"대수":>6}' + ''.join(f'{m:>28}' for m in METHODS32))
+    groups = [(f'{a:.2f}~{b:.2f}', lambda y, a=a, b=b: a <= y < b) for a, b in zip(BINS29[:-1], BINS29[1:])]
+    groups += [('0.58 위 (먼 차)', lambda y: y < 0.58), ('0.54~0.58', lambda y: 0.54 <= y < 0.58)]
+    for name, cond in groups:
+        rows = [r for r in REC32 if r['mis'] == mis and cond(r['yr'])]
+        print(f'  {name:<13}{len(rows):>6}' + ''.join(f'{cell32(rows, m):>28}' for m in METHODS32))
+print('\n보는 법: 먼 차(0.58 위) 행에서 확대가 원본보다 0.10 초과가 크게 줄면 → 해상도가 원인. 비슷하면 → 해상도 아님')
+
+
+# ============================== 33번 셀 ==============================
+# 33. 확대 효과를 '같은 차끼리' 다시 비교 — 32번 결과(REC32)만 다시 센다. 추론 없음, 몇 초.
+# 필요: 32번 셀을 이 세션에서 먼저 실행.
+#
+# 왜: 32번 표는 방법마다 잰 차가 다르다(먼 차 원본 69% vs 확대 77~79%). 확대가 원본이 못 잰 어려운 차까지 재서
+#     초과 대수가 늘었을 수 있다. 그래서 ① 둘 다 잰 차만 놓고 오차를 비교하고,
+#     ② '원본으로 재고, 원본이 못 잰 차만 확대로 보충'하는 방식이 원본보다 나쁜지 본다.
+import numpy as np
+
+if 'REC32' not in globals():
+    raise SystemExit('32번 셀을 이 세션에서 먼저 실행하세요')
+
+GROUPS33 = [(f'{a:.2f}~{b:.2f}', lambda y, a=a, b=b: a <= y < b) for a, b in zip(BINS29[:-1], BINS29[1:]) if a < 0.62]
+GROUPS33 += [('0.58 위 (먼 차)', lambda y: y < 0.58)]
+
+
+def cnt33(e):
+    e = np.asarray(e)
+    if len(e) == 0:
+        return f'{"-":>6} {"-":>14}'
+    c = [int((e > t).sum()) for t in ERR25]
+    return f'{np.median(e):>6.3f} {c[0]:>4}/{c[1]:>4}/{c[2]:>4}'
+
+
+print('═' * 112)
+print('① 둘 다 잰 차만 — 칸 = 오차 중앙값 · 0.10/0.15/0.25 초과 대수 (원본 | 확대)')
+print('═' * 112)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}' + ''.join(f'{f"확대 {z}배: 대수":>14}{"원본":>22}{"확대":>22}' for z in ZOOMS32))
+    for name, cond in GROUPS33:
+        line = f'  {name:<13}'
+        for z in ZOOMS32:
+            m = f'확대 {z}배'
+            rs = [r for r in REC32 if r['mis'] == mis and cond(r['yr']) and r['원본(지금)'] is not None and r[m] is not None]
+            line += f'{len(rs):>14}{cnt33([r["원본(지금)"] for r in rs]):>22}{cnt33([r[m] for r in rs]):>22}'
+        print(line)
+
+print('\n' + '═' * 112)
+print('② 원본으로 재고, 원본이 못 잰 차만 확대로 보충 — 칸 = 잰 비율 · 오차 중앙값 · 0.10/0.15/0.25 초과 대수')
+print('═' * 112)
+for mis, tag in ((False, '검증'), (True, '틀어짐')):
+    print(f'\n▶ {tag}')
+    print(f'  {"차 바닥 높이":<13}{"대수":>6}{"원본(지금)":>28}' + ''.join(f'{f"원본+확대 {z}배 보충":>28}' for z in ZOOMS32))
+    for name, cond in GROUPS33:
+        rows = [r for r in REC32 if r['mis'] == mis and cond(r['yr'])]
+        if not rows:
+            print(f'  {name:<13}{0:>6}')
+            continue
+        line = f'  {name:<13}{len(rows):>6}'
+        for m in [None] + [f'확대 {z}배' for z in ZOOMS32]:
+            e = [r['원본(지금)'] if r['원본(지금)'] is not None or m is None else r[m] for r in rows]
+            e = [v for v in e if v is not None]
+            line += f'{f"{len(e) / len(rows) * 100:.0f}%":>6}{cnt33(e):>22}'
+        print(line)
+print('\n보는 법: ①에서 확대 쪽 초과가 원본보다 적으면 → 같은 차라도 확대가 더 정확(해상도가 원인). 많거나 같으면 → 해상도 아님.')
+print('        ②에서 보충이 잰 비율을 올리면서 초과 대수가 "늘어난 대수만큼만" 늘면 → 못 재던 차를 원본 수준으로 더 재는 것')

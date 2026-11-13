@@ -7,7 +7,8 @@
 처리 순서
 1. 전처리 → 추론(백엔드: ONNX Runtime, 향후 NPU) → 행 방향 출력 해석 (`src/lane/ufld.py`)
 2. 자차 차로 = 차선 번호 `lane.ufld.ego_lane_ids` (CULane 가중치 1·2)
-3. 안전장치 (`src/lane/ufld_guard.py`) — 존재 비율·형상·걸침·차로 폭·(선택)일관성
+3. 안전장치 (`src/lane/ufld_guard.py`) — 존재 비율·형상·걸침·차로 폭·(선택)일관성.
+   판정 구간(`guard_range_ratio`)과 offset 측정 구간(`measure_range_ratio`)은 따로다
 
 실패 처리 — 추론이나 해석에서 예외가 나도 파이프라인을 멈추지 않고 그 프레임을 보류한다
 (AGENTS.md "예외 처리"). 출력 형상이 설정과 다르면 시작할 때 바로 에러를 낸다(잘못된 가중치·설정).
@@ -40,8 +41,15 @@ class UFLDLaneDetector:
         self._ego = tuple(int(i) for i in u.ego_lane_ids)
         if len(self._ego) != 2 or not all(0 <= i < self._spec.num_lanes for i in self._ego):
             raise ValueError(f"lane.ufld.ego_lane_ids가 잘못됐습니다: {u.ego_lane_ids}")
+        # 판정(안전장치)은 가까운 구간, 측정은 더 먼 곳까지 — 판정을 통과한 프레임이면 측정 구간 어느 행에서든
+        # 예측 차선으로 바로 잰다 (노트북 v2 29번 셀 '① 직접')
         self._top_ratio, self._bottom_ratio = (float(v) for v in u.measure_range_ratio)
-        self._guard = LaneGuard(u.guard, self._spec.row_anchor, (self._top_ratio, self._bottom_ratio))
+        if not float(u.row_anchor_range[0]) <= self._top_ratio < self._bottom_ratio <= 1.0:
+            raise ValueError(
+                f"lane.ufld.measure_range_ratio가 잘못됐습니다: {u.measure_range_ratio} "
+                f"(행 앵커 위끝 {u.row_anchor_range[0]} 이상, 위 < 아래 ≤ 1)"
+            )
+        self._guard = LaneGuard(u.guard, self._spec.row_anchor, tuple(float(v) for v in u.guard_range_ratio))
         self._backend = backend if backend is not None else OnnxUFLDBackend(u.model_path, u.num_threads)
         self._verify_backend()
 

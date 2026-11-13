@@ -293,6 +293,32 @@ def test_loss_matches_notebook_definition():
     assert torch.isfinite(ufld_loss(loc, ex, torch.full_like(lab, -1), 0.05))   # 차선 없는 배치
 
 
+def test_far_row_weight_only_changes_far_rows():
+    torch = pytest.importorskip("torch")
+    from scripts.train_ufld import far_row_weights, ufld_loss
+    from src.utils.config import Config
+
+    anchors = np.linspace(0.42, 1.0, 8)
+    assert far_row_weights(anchors, None) is None
+    assert far_row_weights(anchors, Config({"below": 0.58, "weight": 1.0})) is None   # 1.0 = 끔
+    w = far_row_weights(anchors, Config({"below": 0.58, "weight": 3.0}))
+    assert w.tolist() == [3.0 if a < 0.58 else 1.0 for a in anchors]
+
+    torch.manual_seed(0)
+    loc, ex = torch.randn(2, 20, 8, 4), torch.randn(2, 2, 8, 4)
+    lab = torch.randint(-1, 20, (2, 8, 4))
+    assert torch.allclose(ufld_loss(loc, ex, lab, 0.05, torch.ones(8)), ufld_loss(loc, ex, lab, 0.05))
+    # 먼 행만 틀리게 만들면 가중 손실이 커지고, 가까운 행만 틀리게 만들면 작아진다
+    good = torch.full((2, 20, 8, 4), -10.0)
+    good.scatter_(1, lab.clamp(min=0)[:, None], 10.0)
+    far_bad, near_bad = good.clone(), good.clone()
+    far_bad[:, :, :2] = 0.0
+    near_bad[:, :, 2:] = 0.0
+    base = lambda x: ufld_loss(x, ex, lab, 0.05)
+    wl = lambda x: ufld_loss(x, ex, lab, 0.05, w)
+    assert wl(far_bad) > base(far_bad) and wl(near_bad) < base(near_bad)
+
+
 def test_drop_false_adjacent_removes_narrow_outer_lane_only():
     """옆 차로 폭이 자차의 0.6~1.6배 밖인 옆 차선만 뺀다 — 자차 차선과 정상 옆 차선은 그대로 (27번 v2)."""
     from scripts.ufld_labels import drop_false_adjacent

@@ -29,6 +29,7 @@ class LaneModel:
     right_points: Optional[np.ndarray] = None
     measure_y_range: Optional[tuple[float, float]] = None
     """image 좌표계에서 offset을 잴 수 있는 y 구간 (위, 아래) 픽셀. 차량 바닥이 이 밖이면 재지 않는다
-    (lane.ufld.measure_range_ratio). 조감도 경로의 '보정 구간 밖 제외'와 같은 역할."""
+    (lane.ufld.measure_range_ratio). 조감도 경로의 '보정 구간 밖 제외'와 같은 역할.
+    안전장치 판정 구간(lane.ufld.guard_range_ratio)과는 따로다 — 측정 구간이 더 멀리까지 간다."""
     reject_reason: Optional[str] = None
     """valid=False인 이유 (로그·튜닝용). ufld 경로의 안전장치가 채운다."""

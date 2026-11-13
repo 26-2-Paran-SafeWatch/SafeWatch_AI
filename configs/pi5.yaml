@@ -12,6 +12,8 @@ detection:
   engine: onnxruntime          # 실측 후 ncnn으로 변경 검토 (미결 사항, pipeline-architecture.md 5장)
   weights: data/models/yolov8n-safewatch.onnx
   interval: 3                  # 3프레임마다 검출, 나머지는 tracking 보간
+  far_region:
+    enabled: false             # 320×320으로 받으면 먼 영역을 잘라도 새 픽셀이 없다 (pi5_ufld.yaml 1280×720은 다시 켬)
 
 logging:
   level: INFO
