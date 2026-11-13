@@ -18,6 +18,28 @@
 
 ---
 
+## 현재 상태
+
+> 진행 중인 프로젝트다. 아래 수치는 모두 AI Hub `016.도로주행영상` 사진 기준이며, **실차 연속 영상으로는 아직 검증하지 않았다.** 마지막 갱신 2026-11-13.
+
+| 완료 | 진행 중 | 미결 |
+|---|---|---|
+| 파이프라인 전 구간 연결(입력 → 검출 → 차선 → 추적 → 지표 → 판정 → 이벤트 JSON·로컬 큐) — [`docs/sprint-plan.md`](docs/sprint-plan.md) S4 완료 조건 | **차선 UFLDv2 전환** — 채택 모델은 2차 재학습(`ufld_aihub_aug`). 정한 합격 기준(검증 통과분 오답 0)은 미달(검증 1,944장 중 87% 판정, 0.10 초과 5장), 완화안(큰 오답 0 + 작은 오답 2% 이하)으로만 통과 — 완화안 채택은 팀 결정 대기. 그래서 기본 `lane.method`는 아직 `opencv` — [`docs/ufld-training-guide.md`](docs/ufld-training-guide.md) 2·3차 결과, [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2장 | **판정 임계값 [TBD]** — 실제 대시캠 연속 영상이 없어 대부분 초안·[TBD] — [`docs/risk-criteria.md`](docs/risk-criteria.md), [`configs/default.yaml`](configs/default.yaml) |
+| 차량 검출 파인튜닝(YOLOv8n 단일 클래스) — 판정 영역 F1 0.253 → 0.684(494장) — [`docs/sprint-plan.md`](docs/sprint-plan.md) S5 파인튜닝 | **NPU 대기** — 도입 결정(2026-11-06), 기종 미정. Pi5 CPU 첫 실측 UFLD 차선 단계 481ms(약 2fps, 38프레임 참고값·재측정 필요) — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 3-1 | **시작 점수 60 vs `min_indicators` 2 불일치** — 지금 설정은 단서 3개가 있어야 이벤트가 난다. 근거 문서(단서 2개)와 달라 둘 중 하나를 정해야 함 — [`docs/risk-criteria.md`](docs/risk-criteria.md) 4.3 |
+| 먼 차 검출 보강(먼 영역 한 번 더 검출) — 먼 차 새 트랙 Recall 0.49 → 0.70(640 입력 0.72) — [`docs/pipeline-architecture.md`](docs/pipeline-architecture.md) 3.2 v0.21 | **앞차 offset 측정 범위** — 측정 위끝 0.68 → 0.58로 넓혀 앞차 약 14% → 약 41%. 그보다 먼 차는 오차가 커서 재지 않음 — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2-1 29번 | **GPS/IMU 시리얼 입력 미구현** — 차선 걸침 단서는 속도 게이팅 때문에 지금 발동하지 않음 — 아래 "Pi5 배포 흐름" |
+| UFLD 실행 경로(`lane.method: ufld`, ONNX)와 노트북 결과 일치 확인 — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2-1 23번 | **5차 재학습(먼 행 가중) 채택 안 함** — 먼 차 오차가 조금 줄었지만 합격 기준 탈락, 2차 유지 — [`docs/ufld-training-guide.md`](docs/ufld-training-guide.md) 5차 결과 | **영상 클립 미연결** — 링 버퍼(HW) 구현체가 없어 이벤트 클립이 비어 있음 — 아래 "Pi5 배포 흐름" |
+
+### 검증 기록 — 평가가 틀렸던 사례
+
+- **작은 평가셋의 '오답 0'** — 약 250장에서 오답 0이던 조건이 1,944장으로 늘리자 오답 23건(큰 오답 3건). 이후 평가는 Validation 60_전방 전체로 한다 — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2-1 "정정", `notebook/safewatch_lane_calib_v2.ipynb` 25번 셀
+- **학습·검증 시퀀스·프레임 누수** — AI Hub 학습·검증 데이터가 같은 시퀀스·같은 프레임을 공유(검증 시퀀스 98개 중 44개, 1,968장). 학습 데이터에서 검증 시퀀스를 전부 뺀다 — [`docs/ufld-training-guide.md`](docs/ufld-training-guide.md) 3장, [`scripts/prepare_ufld_dataset.py`](scripts/prepare_ufld_dataset.py)
+- **정답 라벨 v2** — 정답 생성이 칸마다 따로 라벨된 점선을 건너뛰는 버그 → 수정 후 틀어짐 오답 15 → 2 — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2-1 17번, `notebook/safewatch_lane_calib_v2.ipynb` 17번 셀
+- **정답 라벨 v3** — 겹선(이중선)을 한 선으로 합치도록 정답 규칙 변경, 학습 데이터 생성도 같은 규칙(검증 라벨 2,766장으로 노트북과 일치 확인) — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2-1 18·19번, [`scripts/ufld_labels.py`](scripts/ufld_labels.py)
+- **노트북 ↔ 실행 코드 대조** — 저장소 실행 코드(ONNX)를 실제 가중치로 노트북과 비교해 같은 행 x 차이 0px, 판정 결과 동일 — [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 2-1 23번, `notebook/safewatch_lane_calib_v2.ipynb` 23번 셀
+- **확대 추론 비교의 표본 불일치** — 방법마다 잰 차가 달라 결론이 뒤집힐 수 있어, 같은 차끼리 다시 비교(확대는 채택 안 함) — `notebook/safewatch_lane_calib_v2.ipynb` 32·33번 셀, [`f6dc200`](https://github.com/26-2-Paran-SafeWatch/SafeWatch_AI/commit/f6dc200)
+
+---
+
 ## 동작 흐름
 
 ```
