@@ -93,7 +93,7 @@ safewatch-ai/
 ├── src/
 │   ├── input/                # 영상 입력 (picamera2 / VideoCapture 추상화)
 │   ├── detection/            # YOLO 차량 검출
-│   ├── lane/                 # OpenCV 차선 인식
+│   ├── lane/                 # 차선 인식 — OpenCV(기본) / UFLDv2(ufld*.py, lane.method로 선택)
 │   ├── tracking/             # ByteTrack 래퍼
 │   ├── metrics/              # lane offset, 시계열 버퍼
 │   ├── risk/                 # 위험 점수 산출, 판정 로직

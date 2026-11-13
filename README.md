@@ -24,7 +24,7 @@
 카메라 프레임
     │
     ├─→ 차량 검출 (YOLOv8n)
-    ├─→ 차선 인식 (OpenCV)
+    ├─→ 차선 인식 (OpenCV 기본 / UFLDv2 전환 중 — lane.method로 선택)
     │
     ├─→ 차량 추적 (ByteTrack) — track_id 유지
     │
@@ -50,13 +50,13 @@
 |---|---|
 | 언어 | Python 3.11 |
 | 객체 검출 | YOLOv8n (Ultralytics) |
-| 차선 인식 | OpenCV |
+| 차선 인식 | OpenCV (기본·대체 경로) / UFLDv2 (전환 중, `lane.method`로 선택) — 근거 [`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) D1·D5 |
 | 객체 추적 | ByteTrack |
 | 위험 판단 | Rule-based (설명 가능성 확보 목적) |
 | 추론 엔진 | ONNX Runtime / NCNN |
 | 카메라 입력 | picamera2 (Pi5) / cv2.VideoCapture (PC) |
 
-**타깃 하드웨어** — Raspberry Pi 5 (8GB). NPU가 없어 CPU 추론만 가능하므로, 모델 경량화와 파이프라인 최적화가 핵심 과제다.
+**타깃 하드웨어** — Raspberry Pi 5 (8GB) + **NPU (2026-11-06 도입 결정, 기종 미정)**. 차선 인식을 딥러닝으로 바꾸면서 NPU를 달기로 했다 ([`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) D7). NPU가 오기 전인 지금은 CPU 추론만 가능하고, Pi5 CPU 첫 실측에서 UFLD 차선 단계가 프레임당 **481ms(약 2fps)**였다 — 38프레임 참고값이라 재측정 필요 ([`docs/lane-detection-dl-plan.md`](docs/lane-detection-dl-plan.md) 3-1).
 
 ---
 

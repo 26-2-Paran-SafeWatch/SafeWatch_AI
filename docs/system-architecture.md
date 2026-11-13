@@ -31,7 +31,7 @@ flowchart LR
 
     subgraph EDGE["엣지 · Raspberry Pi 5"]
         L --> P2a["P2a 검출·추적<br/>YOLO + ByteTrack"]
-        L --> P2b["P2b 차선 인식<br/>OpenCV"]
+        L --> P2b["P2b 차선 인식<br/>OpenCV / UFLDv2"]
         M --> P1["P1 링버퍼<br/>5초 x 12개 순환"]
         P2a --> P3["P3 판단<br/>위험점수 0~100"]
         P2b --> P3
@@ -104,7 +104,7 @@ sequenceDiagram
 |---|---|---|
 | 카메라 (dual-stream) | lores(640×384, 추론용) / main(1280×720, 저장용) 두 스트림을 동시 출력 | HW |
 | P2a 검출·추적 | YOLOv8n + ByteTrack — `pipeline-architecture.md` 3.2, 3.4 | **AI (이 저장소)** |
-| P2b 차선 인식 | OpenCV 기반 lane offset 산출 — `pipeline-architecture.md` 3.3 | **AI (이 저장소)** |
+| P2b 차선 인식 | OpenCV(기본) / UFLDv2(전환 중) 기반 lane offset 산출 — `pipeline-architecture.md` 3.3, `lane-detection-dl-plan.md` | **AI (이 저장소)** |
 | P3 판단 | P2a/P2b 기반 음주 의심 거동 판정 (GPS는 속도 게이팅, IMU는 자차 보정용) — `pipeline-architecture.md` 3.5~3.6, `risk-criteria.md` | **AI (이 저장소)** |
 | P1 링 버퍼 | main 스트림을 5초 세그먼트 × 12개로 순환 보관, 이벤트 시 전후 15초 추출. 버퍼 크기는 HW 파트가 실측으로 결정 | **HW (강섬희) — 확정** |
 | 이벤트 생성 · 업로드 큐 | 임계값 초과 시 이벤트 확정, SQLite 큐에 적재 | AI 판정 로직은 이 저장소, 큐잉·전송은 owner 확인 필요 |

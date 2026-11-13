@@ -24,7 +24,7 @@ HW 쪽(카메라·ESP32·링 버퍼)에서 우리한테 맞춰줘야 하는 게 
 | 구성 | 내용 | 상태 |
 |---|---|---|
 | 모델 | YOLOv8n(차량 검출) **1개뿐** | **사전학습(COCO) 가중치 그대로 — 아직 파인튜닝 전** |
-| 차선 인식 | OpenCV (딥러닝 아님) | 완료, 실차 영상으로 미검증 |
+| 차선 인식 | OpenCV (기본) / UFLDv2 딥러닝 (시험 — 2.5절) | OpenCV 완료·실차 영상 미검증, UFLD는 시험 단계 |
 | 추적 | ByteTrack (딥러닝 아님) | 완료 |
 | 위험 판단 | rule-based (사행·차선걸침·스웨빙·표류·속도불규칙) | 완료, 임계값은 초안 |
 | 이벤트 생성 | JSON 메타데이터 + 로컬 SQLite 큐 | 완료, 클립·전송은 미연결(3장 참고) |
@@ -102,11 +102,12 @@ python -m src.main --config configs/pi5.yaml --source camera
 AI Hub 학습 데이터로 재학습한 모델이 나와서 Pi5에서 시험할 수 있다. **아직 시험 단계**라
 기본 설정(`pi5.yaml`)은 그대로 OpenCV이고, 아래 별도 설정으로만 켠다.
 
-1. **브랜치** — UFLD 코드는 `dev`에 있다(2026-11-09 병합, main 미병합). Pi가 `main`이면 `dev`로 바꾼다.
+1. **브랜치** — **Pi 시험은 `main` 기준이다** (2026-11-13부터). `dev`는 작업 중인 브랜치라 Pi에서 쓰지 않는다.
+   Pi에 넣을 변경은 dev → main PR로 올린다. UFLD 코드는 그 PR로 main에 들어갔다.
 
    ```bash
    git fetch origin
-   git checkout dev
+   git checkout main
    git pull
    ```
 
