@@ -18,3 +18,11 @@ lane:
     backend: hailo
     hef_path: data/models/ufld_aihub_aug.hef
     tail_path: data/models/ufld_tail.onnx
+
+# ⚠️ 시험 브랜치(test/event-score-40) 전용 — 이벤트 생성 확인용. 판단 기준 정식 변경 아님.
+# 시작 60(단서 3개)과 min_indicators 2(단서 2개)의 불일치는 risk-criteria.md 4.3 미결 — (가)/(나) 결정 전.
+# 시뮬레이션 영상 진단(2026-11-15): 1번 차 사행+스웨빙 40점에서 멈춰 이벤트 0건.
+risk:
+  hysteresis:
+    start_score: 40   # 단서 2개에서 이벤트 (원래 60 = 단서 3개)
+    end_score: 20     # 단서 1개 이하로 줄면 끝 (원래 40 — 시작과 같으면 경계에서 켜졌다 꺼졌다 함)
