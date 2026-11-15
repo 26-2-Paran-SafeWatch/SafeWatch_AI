@@ -50,7 +50,7 @@ class UFLDLaneDetector:
                 f"(행 앵커 위끝 {u.row_anchor_range[0]} 이상, 위 < 아래 ≤ 1)"
             )
         self._guard = LaneGuard(u.guard, self._spec.row_anchor, tuple(float(v) for v in u.guard_range_ratio))
-        self._backend = backend if backend is not None else OnnxUFLDBackend(u.model_path, u.num_threads)
+        self._backend = backend if backend is not None else _make_backend(u, self._spec)
         self._verify_backend()
 
     def _verify_backend(self) -> None:
@@ -100,3 +100,15 @@ class UFLDLaneDetector:
             left_points=left, right_points=right, measure_y_range=measure,
             reject_reason=result.reason,
         )
+
+
+def _make_backend(u: Config, spec: UFLDSpec) -> UFLDBackend:
+    """lane.ufld.backend: onnx(CPU, 기본) | hailo(NPU, lane.ufld.hailo)."""
+    kind = u.backend if "backend" in u else "onnx"
+    if kind == "onnx":
+        return OnnxUFLDBackend(u.model_path, u.num_threads)
+    if kind == "hailo":
+        from src.lane.ufld_hailo import HailoUFLDBackend
+
+        return HailoUFLDBackend(u.hailo.model_path, spec, u.hailo.input)
+    raise ValueError(f"lane.ufld.backend '{kind}'를 모릅니다 — onnx | hailo")
