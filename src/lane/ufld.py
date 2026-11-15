@@ -198,20 +198,13 @@ class HailoUFLDBackend:
         for p in (hef_path, tail_path):
             if not Path(p).exists():
                 raise FileNotFoundError(f"UFLD NPU 모델 파일이 없습니다: {p} — docs/ufld-hailo-conversion.md로 만들 것")
-        try:
-            # Pi에 apt(hailo-all)로 깔린다. 맥·PC·가짜 백엔드 테스트는 이 import 없이 돈다
-            from hailo_platform import FormatType, HailoSchedulingAlgorithm, VDevice  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(
-                "hailo_platform을 import할 수 없습니다 — Pi에서 'sudo apt install hailo-all' 후 "
-                "가상환경이 시스템 패키지를 보는지(--system-site-packages) 확인할 것"
-            ) from exc
+        from src.utils import hailo_device
+
+        # 차량 검출(YOLO)과 같은 장치를 나눠 쓴다 — ROUND_ROBIN 스케줄러 (src/utils/hailo_device.py)
+        self._vdevice = hailo_device.acquire()
+        from hailo_platform import FormatType  # type: ignore[import-not-found]  # acquire가 import를 확인함
         import onnxruntime as ort
 
-        params = VDevice.create_params()
-        # 필수 — 빠뜨리면 HAILO_STREAM_NOT_ACTIVATED로 출력이 빈다 (hailo-apps 공식 코드와 같은 방식)
-        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
-        self._vdevice = VDevice(params)
         self._ctx = None
         try:
             model = self._vdevice.create_infer_model(str(hef_path))
@@ -246,5 +239,7 @@ class HailoUFLDBackend:
             self._ctx.__exit__(None, None, None)
             self._ctx = None
         if self._vdevice is not None:
-            self._vdevice.release()
+            from src.utils import hailo_device
+
+            hailo_device.release()
             self._vdevice = None

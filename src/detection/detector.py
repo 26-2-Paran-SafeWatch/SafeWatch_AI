@@ -9,6 +9,9 @@
    같은 모델에 한 번 더 넣고, 전체 화면 검출과 겹치지 않는 것만 더한다
 6. 전방 차량 필터링 — 화면 중앙 영역 우선
 
+실행 엔진은 `detection.backend`로 고른다 — ultralytics(.pt·ONNX·NCNN, 기본) | hailo(Hailo-8 NPU,
+`src/detection/hailo_yolo.py` — Ultralytics format=hailo 내보내기 폴더를 공유 장치 위에서 실행).
+
 AGENTS.md 원칙 — YOLOv8n 이상 크기 모델 사용 금지, 설정값은 config로 분리.
 """
 
@@ -27,9 +30,6 @@ logger = logging.getLogger("safewatch.detection")
 
 class VehicleDetector:
     def __init__(self, cfg: Config):
-        # ultralytics는 import 비용이 커서 detector 생성 시점에만 로드한다.
-        from ultralytics import YOLO
-
         det_cfg = cfg.detection
         self._conf_threshold: float = det_cfg.conf_threshold
         self._iou_threshold: float = det_cfg.iou_threshold
@@ -48,11 +48,36 @@ class VehicleDetector:
         # 먼 영역 박스가 전체 화면 박스를 대신할지 정하는 기준 — 새 트랙을 만들 수 있는 신뢰도
         self._track_high_thresh: float = float(cfg.tracking.track_high_thresh)
 
-        logger.info("YOLO 가중치 로드: %s", det_cfg.weights)
-        self._model = YOLO(det_cfg.weights, task="detect")
-        self._vehicle_class_ids = self._resolve_vehicle_classes(det_cfg.vehicle_class_names)
+        backend = det_cfg.backend if "backend" in det_cfg else "ultralytics"
+        logger.info("YOLO 가중치 로드: %s (backend=%s)", det_cfg.weights, backend)
+        self._hailo = None
+        self._model = None
+        if backend == "ultralytics":
+            # ultralytics는 import 비용이 커서 detector 생성 시점에만 로드한다.
+            from ultralytics import YOLO
 
-    def _resolve_vehicle_classes(self, wanted: list[str]) -> frozenset[int]:
+            self._model = YOLO(det_cfg.weights, task="detect")
+            names = self._model.names
+        elif backend == "hailo":
+            from src.detection.hailo_yolo import HailoYolo
+
+            self._hailo = HailoYolo(det_cfg.weights, self._conf_threshold)
+            names = self._hailo.names
+        else:
+            raise ValueError(f"detection.backend '{backend}'를 모릅니다 — ultralytics | hailo")
+        try:
+            self._vehicle_class_ids = self._resolve_vehicle_classes(names, det_cfg.vehicle_class_names)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """NPU 자원 해제 (backend: hailo). 파이프라인 종료 때 부른다."""
+        if self._hailo is not None:
+            self._hailo.close()
+            self._hailo = None
+
+    def _resolve_vehicle_classes(self, names: dict[int, str], wanted: list[str]) -> frozenset[int]:
         """가중치에 실린 클래스 이름 중 차량으로 볼 것의 id.
 
         id가 아니라 이름으로 고르는 이유 — 사전학습(COCO) 가중치는 car=2·bus=5…이고
@@ -60,7 +85,6 @@ class VehicleDetector:
         바꾸고 id를 안 바꿨을 때 차량이 하나도 안 잡히는데, 에러 없이 조용히
         판정 전체가 멈춘다. 이름은 .pt·ONNX·NCNN 모두 가중치 메타데이터에 실려 온다.
         """
-        names: dict[int, str] = self._model.names
         ids = frozenset(i for i, name in names.items() if name in set(wanted))
         if not ids:
             # 프레임마다 실패하는 것보다 시작 시점에 멈추는 편이 원인을 찾기 쉽다
@@ -94,6 +118,12 @@ class VehicleDetector:
 
     def _predict(self, image: np.ndarray, x_off: int, y_off: int) -> list[VehicleBox]:
         """한 장 추론 → 차량 박스. (x_off, y_off)만큼 더해 원본 프레임 좌표로 되돌린다."""
+        if self._hailo is not None:
+            return [
+                VehicleBox(x1=x1 + x_off, y1=y1 + y_off, x2=x2 + x_off, y2=y2 + y_off, confidence=score, class_id=cls)
+                for x1, y1, x2, y2, score, cls in self._hailo.predict(image, self._conf_threshold)
+                if cls in self._vehicle_class_ids
+            ]
         results = self._model.predict(
             image,
             conf=self._conf_threshold,

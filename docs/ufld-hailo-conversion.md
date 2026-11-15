@@ -138,4 +138,8 @@ python -m scripts.check_hailo_ufld --config configs/pi5_ufld_hailo.yaml --source
 
 - **병목은 CPU 뒷부분 FC(42.8ms)** — 가중치 487MB를 매 프레임 읽는 시간이 대부분이다. ONNX Runtime 동적 양자화(INT8)로
   3~4배 빨라질 것으로 예상하지만 해 보지 않았다. 하면 5장처럼 원본과 비교해 정확도를 확인한다.
-- 차량 검출(YOLOv8n) Hailo 이전 — 같은 WSL 환경에서 Ultralytics `format=hailo` 내보내기(별도 작업).
+- 차량 검출(YOLOv8n) — Ultralytics `format=hailo`로 내보냄(2026-11-15, 폴더 `yolov8n-safewatch_hailo_model`).
+  `detection.backend: hailo`로 실행한다 (`src/detection/hailo_yolo.py`).
+  **두 모델은 VDevice 하나를 나눠 쓴다** (`src/utils/hailo_device.py`, ROUND_ROBIN). Ultralytics로 HEF를 바로 열면 장치를 따로
+  열어 차선 모델과 `HAILO_OUT_OF_PHYSICAL_DEVICES`로 충돌한다. 내보낼 때 NMS 점수 기준은 `conf=0.1`로 맞춘다
+  (기본 0.25면 0.1~0.25 박스가 칩에서 빠진다 — 추적의 2차 매칭·먼 영역 검출에 쓰는 박스).

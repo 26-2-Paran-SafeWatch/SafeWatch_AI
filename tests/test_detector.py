@@ -79,8 +79,7 @@ class _FakeModel:
 
 def _resolve(names: dict[int, str], wanted: list[str]) -> frozenset[int]:
     detector = VehicleDetector.__new__(VehicleDetector)   # 가중치 로드 없이 클래스 선택만 시험
-    detector._model = _FakeModel(names)
-    return detector._resolve_vehicle_classes(wanted)
+    return detector._resolve_vehicle_classes(_FakeModel(names).names, wanted)
 
 
 WANTED = ["car", "motorcycle", "bus", "truck", "vehicle"]   # configs/default.yaml과 같은 목록
@@ -160,6 +159,7 @@ class _ShapeModel:
 def _far_detector(full_rows, far_rows, enabled=True):
     d = VehicleDetector.__new__(VehicleDetector)
     d._model = _ShapeModel(full_rows, far_rows)
+    d._hailo = None
     d._vehicle_class_ids = frozenset({0})
     d._conf_threshold, d._iou_threshold = 0.1, 0.45
     d._roi_top_ratio, d._center_region_ratio = 0.0, 0.7

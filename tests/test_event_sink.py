@@ -100,7 +100,7 @@ def fake_pipeline(monkeypatch):
             return RiskAssessment(track_id=track.track_id, score=60, level="medium", types=["weaving", "swerving"],
                                   indicators={"direction_changes_count": 3}, should_emit_event=fid == EMIT_AT)
 
-    monkeypatch.setattr(main_mod, "VehicleDetector", lambda cfg: SimpleNamespace(detect=lambda img: [BOX]))
+    monkeypatch.setattr(main_mod, "VehicleDetector", lambda cfg: SimpleNamespace(detect=lambda img: [BOX], close=lambda: None))
     monkeypatch.setattr(main_mod, "create_lane_detector", lambda cfg: SimpleNamespace(
         detect=lambda img, **kw: lane, perspective=None, close=lambda: None))
     monkeypatch.setattr(main_mod, "VehicleTracker", lambda cfg: SimpleNamespace(

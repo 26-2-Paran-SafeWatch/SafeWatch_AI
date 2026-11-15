@@ -162,6 +162,7 @@ def run_benchmark(
     finally:
         frame_source.close()
         lane_detector.close()
+        detector.close()
 
     elapsed_sec = time.perf_counter() - start
     fps = frame_count / elapsed_sec if elapsed_sec > 0 else 0.0

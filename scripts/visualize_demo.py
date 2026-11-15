@@ -263,6 +263,7 @@ def run_stream(args: argparse.Namespace, cfg, detector: VehicleDetector, lane_de
     finally:
         source.close()
         lane_detector.close()
+        detector.close()
         for w in (out, raw):
             if w is not None:
                 w.release()
@@ -290,6 +291,7 @@ def main() -> None:
             run_image(args, detector, lane_detector)
         finally:
             lane_detector.close()
+            detector.close()
     else:
         run_stream(args, cfg, detector, lane_detector)
 

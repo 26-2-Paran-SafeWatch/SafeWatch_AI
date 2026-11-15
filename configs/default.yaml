@@ -29,6 +29,7 @@ detection:
   conf_threshold: 0.1
   iou_threshold: 0.45          # NMS IoU 임계값
   engine: pytorch              # pytorch | onnxruntime | ncnn
+  backend: ultralytics         # ultralytics(.pt·ONNX·NCNN) | hailo(Hailo-8, weights = format=hailo 내보내기 폴더) — src/detection/hailo_yolo.py
   # 프레임 상단 이 비율만큼 잘라내고 추론. 0 = 크롭 없음 (2026-11-02, 0.45에서 변경).
   # 0.45에서 놓친 근거리 차량의 73%가 크롭선에 잘린 차량이었다 — 근거리 Recall 0.724 → 0.881(0),
   # 오탐 99 → 56. 고정 320 입력 ONNX·NCNN에서는 잘라도 연산이 줄지 않는다 (pipeline-architecture.md 3.2)
