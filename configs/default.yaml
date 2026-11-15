@@ -223,11 +223,12 @@ risk:
   cooldown_sec: 60              # 동일 차량 중복 이벤트 억제
 
 event:
-  clip_pre_sec: 10
+  clip_pre_sec: 10                     # src/event/clip.py용 — main은 안 씀(클립 길이는 HW config)
   clip_post_sec: 5
   cooldown_sec: 60
   output_dir: data/processed/events
-  queue_dir: data/processed/queue
+  queue_dir: data/processed/queue      # src/event/queue.py용 — main은 안 씀(큐는 HW 담당)
+  sink_dir: data/processed/outbox      # FileEventSink(기본 sink)가 envelope를 <event_id>.json으로 저장 — HW sink를 넘기면 안 씀
   device_id: safewatch-dev-001         # 실기기 배포 시 고유 ID로 교체 (event-schema.md 3.1)
   model_version: yolov8n-safewatch-unfinetuned   # S5 파인튜닝 전까지는 사전학습 가중치 그대로임을 명시
   rule_version: risk-v0.10-dui-scope             # risk-criteria.md 버전과 맞춰 수동 갱신

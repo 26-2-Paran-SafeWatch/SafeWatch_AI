@@ -1,13 +1,16 @@
 """SafeWatch AI 파이프라인 진입점.
 
-현재 연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS · RISK ·
-EVENT(메타데이터 + 로컬 큐 적재). 이벤트 발생 시 JSON 메타데이터를 만들어
-로컬 SQLite 큐(`src/event/queue.py`)에 저장하고 로그로도 남긴다. **영상
-클립 추출은 아직 없다** — 링 버퍼 요청 인터페이스가 HW 파트와 협의 중이라
-`NullClipProvider`(`src/event/clip.py`)가 항상 클립 없음을 반환한다
-(docs/system-architecture.md "아직 남은 것"). 실제 인터페이스가 확정되면
-이 자리에서 `ClipProvider` 구현체만 교체하면 된다. 각 스프린트 진행에
-따라 파이프라인을 채운다 (docs/pipeline-architecture.md 참고).
+연결된 구간 — INPUT · DETECTION · LANE · TRACKING · METRICS · RISK · EVENT(JSON 생성).
+
+**역할 나누기 (2026-11-15 HW 파트와 합의)** — AI는 이벤트 JSON을 만들어 HW에 넘기는
+데까지만 한다. 이벤트가 확정되면 envelope(event / trigger / target)를 만들어
+`EventSink.publish()`에 넘긴다 (docs/event-schema.md "AI → HW 전달 형식(envelope)").
+클립 자르기·location·큐·재시도·서버 전송은 HW 파트가 자기 sink 안에서 한다.
+
+**실기기 연결** — Pi 카메라는 한 프로세스만 열 수 있어서, HW 실행 스크립트가 카메라를 한 번
+열어 H.264는 링버퍼로, RGB 프레임은 AI로 나눠 준다. 그래서 HW 스크립트가 `run()`을 import해
+자기 FrameSource(`frames()`가 `Frame`을 내고 `close()`가 있음)와 EventSink를 넘긴다.
+넘기지 않으면 `create_source()`와 `FileEventSink(event.sink_dir)`를 쓴다 (PC 개발용).
 
 **GPS 속도** — RISK의 `lane_departure`는 자차 속도 게이팅(LDWS 60km/h
 근거, risk-criteria.md 1.3)이 필요하다. `src/input/sensors.py`로 입력
@@ -28,14 +31,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from pathlib import Path
 
 from src.detection.detector import VehicleDetector
-from src.event.builder import EventIdGenerator, build_event_metadata
-from src.event.clip import NullClipProvider
-from src.event.queue import EventQueue
+from src.event.builder import EventIdGenerator, build_event_envelope, build_event_metadata
+from src.event.sink import EventSink, FileEventSink
 from src.input.sensors import create_sensor_source
-from src.input.source import create_source
+from src.input.source import FrameSource, create_source
 from src.lane import create_lane_detector
 from src.metrics.offset import OffsetCalculator
 from src.risk.frame_quality import FrameQualityChecker
@@ -57,13 +58,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run(config_path: str, source: str) -> None:
+def run(
+    config_path: str,
+    source: str,
+    frame_source: FrameSource | None = None,
+    event_sink: EventSink | None = None,
+) -> None:
+    """파이프라인 실행. HW 실행 스크립트는 자기 카메라(`frame_source`)와 sink(`event_sink`)를 넘긴다.
+
+    `source`는 넘긴 frame_source가 있어도 envelope의 trigger.source에 쓰인다 — 카메라면 "camera".
+    넘긴 frame_source·event_sink도 끝날 때 이 함수가 `close()`한다.
+    """
     cfg = load_config(config_path)
     setup_logging(cfg)
     logger.info("설정 로드 완료: %s", config_path)
 
-    resolution = tuple(cfg.input.resolution)
-    frame_source = create_source(source, resolution=resolution)
+    if frame_source is None:
+        frame_source = create_source(source, resolution=tuple(cfg.input.resolution))
+    if event_sink is None:
+        event_sink = FileEventSink(cfg.event.sink_dir)
     logger.info("영상 소스 시작: %s", source)
 
     detector = VehicleDetector(cfg)
@@ -76,8 +89,6 @@ def run(config_path: str, source: str) -> None:
     risk_scorer = RiskScorer(cfg)
     frame_quality_checker = FrameQualityChecker(cfg)
     event_id_generator = EventIdGenerator(cfg.event.device_id)
-    clip_provider = NullClipProvider()  # HW 링 버퍼 인터페이스 확정 전까지 항상 클립 없음
-    event_queue = EventQueue(Path(cfg.event.queue_dir) / "events.db")
     sensor_source = create_sensor_source(cfg)
     # 차선 검출의 차량 영역 제외용 — 검출 주기(interval) 사이 프레임은 직전 검출 박스를
     # 그대로 쓴다. 몇 프레임 동안 차가 움직이는 거리는 박스 여유(pad_ratio)보다 작다.
@@ -124,30 +135,21 @@ def run(config_path: str, source: str) -> None:
                     ego_speed_kmh=sensor_reading.gps_speed_kmh, frame_quality_ok=frame_quality_ok,
                 )
                 if assessment.should_emit_event:
-                    clip_result = clip_provider.request_clip(
-                        frame.timestamp, cfg.event.clip_pre_sec, cfg.event.clip_post_sec
-                    )
                     event = build_event_metadata(
                         event_id=event_id_generator.next(frame.timestamp),
                         device_id=cfg.event.device_id,
                         timestamp=frame.timestamp,
                         assessment=assessment,
-                        series=ts,
-                        track=track,
                         cfg=cfg,
                         model_version=cfg.event.model_version,
                         rule_version=cfg.event.rule_version,
-                        # location은 GPS 미연결로 아직 없음 (build_event_metadata docstring)
-                        clip=clip_result.to_schema_dict() if clip_result else None,
                     )
-                    event_queue.enqueue(
-                        event, clip_path=clip_result.local_path if clip_result else None
-                    )
+                    # 이 줄 형식은 HW 테스트 도구가 파싱한다 — 바꾸지 말 것
                     logger.info(
                         "frame_id=%d 음주운전 의심 거동 감지 — %s",
                         frame.frame_id, json.dumps(event, ensure_ascii=False),
                     )
-                    # TODO(S4): 실제 전송(HTTP 업로드) — event_queue.pending()에서 꺼내 전송 후 mark_sent()
+                    _publish(event_sink, build_event_envelope(event, frame, track, ts, source))
                 elif frame.frame_id % 30 == 0:
                     logger.debug(
                         "frame_id=%d track=%d offset=%.2fm(%.1f%%) v_lat=%.2fm/s score=%d",
@@ -161,10 +163,18 @@ def run(config_path: str, source: str) -> None:
         frame_source.close()
         sensor_source.close()
         lane_detector.close()   # NPU(lane.ufld.backend: hailo) 자원 해제
-        event_queue.close()
+        event_sink.close()
         summary = profiler.summary()
         if summary:
             logger.info("단계별 평균 처리 시간(ms): %s", summary)
+
+
+def _publish(sink: EventSink, envelope: dict) -> None:
+    """HW sink가 예외를 내도 파이프라인은 계속 돈다."""
+    try:
+        sink.publish(envelope)
+    except Exception:  # noqa: BLE001
+        logger.exception("이벤트 전달 실패 — event_id=%s", envelope["event"]["event_id"])
 
 
 def main() -> None:

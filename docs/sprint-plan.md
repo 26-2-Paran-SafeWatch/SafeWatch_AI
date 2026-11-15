@@ -267,7 +267,7 @@ AI Hub 승인이 지연되면 S5 일정이 밀린다. 1주차 내 신청을 완�
 - [x] **쿨다운** — `cooldown_sec` 동안 동일 차량 재발생 억제, `tests/test_risk_scorer.py`로 검증
 
 ### 이벤트 출력
-- [ ] 이벤트 발생 시 전후 구간 클립 추출 (전 10초 + 후 5초) — **여전히 블록됨**(실제 클립 데이터는 HW 링 버퍼 연결 필요). 다만 **요청 인터페이스의 타입 계약은 완료 (2026-10-01)** — `src/event/clip.py`(`ClipProvider` Protocol, `NullClipProvider`). HW 쪽 구체 형태(함수 호출/IPC/파일) 확정 시 구현체만 교체하면 된다
+- [ ] 이벤트 발생 시 전후 구간 클립 추출 (전 10초 + 후 5초) — **2026-11-15 HW 담당으로 이관**: AI는 envelope의 `trigger`(epoch·video_sec)만 넘기고 HW가 자른다(`event-schema.md` 4-1). 이하 이전 기록: **여전히 블록됨**(실제 클립 데이터는 HW 링 버퍼 연결 필요). 다만 **요청 인터페이스의 타입 계약은 완료 (2026-10-01)** — `src/event/clip.py`(`ClipProvider` Protocol, `NullClipProvider`). HW 쪽 구체 형태(함수 호출/IPC/파일) 확정 시 구현체만 교체하면 된다
 - [x] JSON 이벤트 메타데이터 생성 — **완료 (2026-09-27)**, `src/event/builder.py` + `EventIdGenerator`, `main.py`에 연결. `location`은 GPS 미연결로 생략, `clip`은 `ClipProvider` 결과가 있으면 채움(현재는 `NullClipProvider`라 항상 생략). 스키마는 AI 파트 확정안(5.1) 기준 — 서버 최종 합의는 별개
 - [x] 로컬 이벤트 큐 구현 (전송 실패 대비 Store-and-Forward) — **완료 (2026-10-01)**, `src/event/queue.py`(`EventQueue`, SQLite). 메타/클립 전송 상태를 분리 추적하고 `event_id` 재전송 시 중복 적재를 막는다. 실제 네트워크 전송(서버 업로드) 클라이언트는 포함하지 않음 — 업로드 큐 전송 측 구현 주체는 여전히 미정(system-architecture.md)이지만, 로컬 저장·상태추적은 데이터셋·팀 결정과 무관해 먼저 완성
 

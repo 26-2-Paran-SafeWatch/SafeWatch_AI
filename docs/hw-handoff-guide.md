@@ -184,20 +184,29 @@ UART로 보내는 실제 프레임 포맷(필드 구성, 보율, 타임스탬프
 IMU(yaw rate 등)는 지금 어떤 판정에도 안 쓴다 — 자차 흔들림 보정 공식 자체가
 아직 연구/근거가 없어서다. GPS 속도만 먼저 필요하다.
 
-### 3.3 이벤트 클립(링 버퍼) — 요청/반환 형태 미정
+### 3.3 이벤트 전달·카메라 공유 — EventSink·FrameSource 주입 (2026-11-15 합의)
 
-HW 아키텍처상 **링 버퍼는 HW 파트가 구현**하고(5초 세그먼트×12개 순환, 총
-60초), 이벤트 발생 시 우리 쪽이 "전후 15초 클립 주세요"라고 요청하면 반환받는
-구조로 설계돼 있다. 우리가 기대하는 요청 값은:
+**AI는 이벤트 JSON 생성까지, 클립 자르기·location·큐·재시도·서버 전송은 HW**가 맡기로 했다.
+예전 `ClipProvider`(클립을 AI가 요청해 받는 방식)는 쓰지 않는다 — `src/event/clip.py`·`queue.py`는
+참고용으로만 남아 있고 `src/main.py`는 쓰지 않는다.
 
-- 이벤트 발생 시각(Unix timestamp)
-- 이전 10초, 이후 5초 (`configs/default.yaml`의 `event.clip_pre_sec`/`clip_post_sec`)
+HW 실행 스크립트가 AI의 `run()`을 import해 자기 카메라와 sink를 넘기면 된다.
 
-이 요청을 **어떤 형태(함수 호출 / IPC / 파일)로 주고받을지**가 아직 안
-정해졌다. [`src/event/clip.py`](../src/event/clip.py)에 그 계약(`ClipProvider`)만
-정의해 뒀고, 지금은 항상 "클립 없음"을 반환하는 자리채움(`NullClipProvider`)으로
-동작 중이다. 형태가 정해지면 이 Protocol을 구현하는 클래스 하나만 추가하면
-된다(우리 쪽 메인 로직은 안 바뀜).
+```python
+from src.main import run
+
+run("configs/pi5_ufld_hailo.yaml", "camera",
+    frame_source=hw_camera,   # frames()가 Frame(image BGR, timestamp=time.time(), frame_id, media_sec=None)을 내고 close()가 있음
+    event_sink=hw_sink)       # publish(envelope) — 바로 돌아올 것, close()
+```
+
+- **카메라 공유** — Pi 카메라는 한 프로세스만 열 수 있어서, HW가 한 번 열어 H.264는 링버퍼로, RGB 프레임은 AI로 나눠 준다.
+  `Frame.timestamp`는 링버퍼와 같은 시계(`time.time()`)여야 envelope의 `trigger.epoch`로 클립을 자를 수 있다.
+- **envelope** — `event`(서버로 그대로) / `trigger`(클립 자를 기준: epoch·frame_id·source·video_sec) / `target`(대상 차량 박스 등 참고).
+  형식은 [`event-schema.md`](event-schema.md) 4-1. 클립 전·후 길이는 HW config에서 정한다.
+- **넘기지 않으면** — 카메라는 `create_source()`, sink는 `FileEventSink`(`data/processed/outbox/<event_id>.json`)를 쓴다. PC 테스트용.
+- `publish`에서 예외가 나도 파이프라인은 계속 돈다. 끝날 때 `run()`이 `frame_source.close()`·`event_sink.close()`를 부른다.
+- 로그 줄 `frame_id=%d 음주운전 의심 거동 감지 — <event JSON>` 형식은 유지한다(HW 테스트 도구가 파싱).
 
 ---
 
@@ -244,7 +253,6 @@ chmod +x scripts/aihubshell_fixed.sh
 - ✅ ONNX·NCNN 변환 둘 다 가능, 벤치마크 도구 있음
 - ⚠️ 모델은 아직 사전학습 그대로 — 정확도 낮음, 파인튜닝 전
 - ⚠️ GPS 없어서 `lane_departure` 단서는 항상 판정 보류 (3.2절 — ESP32 프로토콜 확정 시 해소)
-- ⚠️ 영상 클립 없음 — 이벤트는 메타데이터(JSON)만 생성됨 (3.3절 — 링 버퍼 연동 시 해소)
-- ⚠️ 서버 실제 업로드 없음 — 로컬 SQLite 큐에 쌓이기만 함 (서버 API 스펙 확정 필요, 주민규 파트)
+- ✅ 이벤트는 envelope로 HW sink에 넘김 — 클립·location·전송은 HW 담당 (3.3절)
 
 막히는 부분 있으면 언제든 물어봐.

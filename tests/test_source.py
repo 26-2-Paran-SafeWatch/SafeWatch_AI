@@ -50,3 +50,14 @@ def test_stuck_position_falls_back_to_frame_count(video):
     src.close()
     assert np.all(np.diff(ts) > 0)
     assert ts[-1] - ts[0] == pytest.approx(29 / 15, abs=1e-3)
+
+
+def test_file_frames_carry_media_sec(video):
+    src = VideoFileSource(video)
+    frames = list(src.frames())
+    src.close()
+    secs = [f.media_sec for f in frames]
+    assert secs[0] == pytest.approx(0.0, abs=1e-6)
+    assert np.allclose(np.diff(secs), 1 / 15, atol=1e-3)
+    # timestamp = 연 시각 + 영상 안 시각
+    assert np.allclose(np.array([f.timestamp for f in frames]) - secs, frames[0].timestamp, atol=1e-6)

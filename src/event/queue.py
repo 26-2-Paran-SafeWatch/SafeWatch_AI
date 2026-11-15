@@ -1,5 +1,9 @@
 """로컬 이벤트 큐 — Store-and-Forward. docs/pipeline-architecture.md 3.7 참고.
 
+> **실기기 경로 아님 (2026-11-15)** — 클립·큐·전송은 HW 파트가 맡기로 해서 `src/main.py`는 이 모듈을
+> 쓰지 않는다. AI는 envelope를 `src/event/sink.py`로 넘긴다 (docs/event-schema.md "AI → HW 전달 형식").
+> 참고·테스트용으로 남겨 둔다.
+
 통신 단절에도 이벤트가 유실되지 않도록 이벤트 발생 즉시 로컬(SQLite)에
 저장한다. **이 모듈이 하는 일은 저장·조회·전송 상태 갱신까지다 — 실제
 네트워크 전송(서버 업로드)은 포함하지 않는다.** 업로드 큐의 "구현 주체"는

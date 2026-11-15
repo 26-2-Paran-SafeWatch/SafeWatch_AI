@@ -1,6 +1,10 @@
 """클립 요청 인터페이스. docs/pipeline-architecture.md 3.7,
 docs/system-architecture.md "아직 남은 것" 참고.
 
+> **실기기 경로 아님 (2026-11-15)** — 클립·큐·전송은 HW 파트가 맡기로 해서 `src/main.py`는 이 모듈을
+> 쓰지 않는다. AI는 envelope를 `src/event/sink.py`로 넘긴다 (docs/event-schema.md "AI → HW 전달 형식").
+> 참고·테스트용으로 남겨 둔다.
+
 링 버퍼는 HW 파트(강섬희)가 구현하며, 버퍼 크기도 HW 파트가 실측해서
 정한다(확정 사항). 이 저장소(AI 파트)의 EVENT 모듈은 "이벤트 시점 + 전후
 구간을 넘겨 클립을 요청하고 반환받는" 쪽이다. **요청 인터페이스의 구체
