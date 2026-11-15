@@ -8,8 +8,8 @@ LANE_METHODS = ("opencv", "ufld")
 
 
 def create_lane_detector(cfg: Config):
-    """설정에 맞는 차선 인식기. 둘 다 `detect(image, vehicle_boxes=, timestamp=) -> LaneModel`과
-    `perspective`(opencv = 조감도 변환기, ufld = None) 속성을 갖는다."""
+    """설정에 맞는 차선 인식기. 둘 다 `detect(image, vehicle_boxes=, timestamp=) -> LaneModel`,
+    `perspective`(opencv = 조감도 변환기, ufld = None) 속성, `close()`(NPU 자원 해제 — 종료 때 부를 것)를 갖는다."""
     method = cfg.lane.method if "method" in cfg.lane else "opencv"
     if method == "opencv":
         from src.lane.lane_detector import LaneDetector

@@ -161,6 +161,7 @@ def run_benchmark(
         logger.info("중단 요청 수신, 지금까지 처리한 구간으로 결과를 낸다.")
     finally:
         frame_source.close()
+        lane_detector.close()
 
     elapsed_sec = time.perf_counter() - start
     fps = frame_count / elapsed_sec if elapsed_sec > 0 else 0.0

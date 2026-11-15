@@ -75,13 +75,10 @@ lane:
     # UFLDv2 ResNet18 CULane 가중치 (원 저장소 configs/culane_res18.py) → scripts/export_ufld_onnx.py로 변환.
     # 아래 형상 값은 가중치와 반드시 같아야 한다 — 다르면 시작할 때 에러. 튜닝 대상이 아님
     model_path: data/models/ufld_culane_res18.onnx
-    num_threads: 4             # ONNX Runtime CPU 스레드 (0 = 기본값). backend: hailo면 안 씀
-    backend: onnx              # onnx(CPU) | hailo(NPU, 아래 hailo) — src/lane/ufld_hailo.py
-    hailo:
-      model_path: data/models/ufld_aihub_aug.hef
-      # HEF에 넣을 입력 — normalized(정규화한 float, 변환 때 정규화 층 없음) | rgb255(RGB 0~255, 정규화 층을 넣어 변환).
-      # 변환 방법에 따라 다르다 — scripts/check_hailo_ufld.py가 ONNX 출력과 비교해 맞는 쪽을 알려 준다
-      input: normalized
+    num_threads: 4             # ONNX Runtime CPU 스레드 (0 = 기본값). backend: hailo면 뒷부분(tail)에 적용
+    backend: onnx              # onnx(CPU, model_path 전체) | hailo(NPU 백본 hef_path + CPU 뒷부분 tail_path) — docs/ufld-hailo-conversion.md
+    hef_path: data/models/ufld_aihub_aug.hef    # backend: hailo — 입력~/pool/Conv (Hailo-8)
+    tail_path: data/models/ufld_tail.onnx       # backend: hailo — /pool/Conv 뒤 (CPU, num_threads 적용)
     input_size: [1600, 320]    # [width, height]
     crop_ratio: 0.6            # 화면을 높이 input_h/crop_ratio로 늘린 뒤 아래 input_h만 넣는다
     grid_num: 200              # 행마다 가로 격자 칸 수

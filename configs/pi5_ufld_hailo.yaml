@@ -1,0 +1,13 @@
+# Pi5 + Hailo-8 NPU — pi5_ufld.yaml을 상속하고 차선 모델(UFLDv2)을 NPU 백본 + CPU 뒷부분으로 나눠 돌린다.
+# 모델 파일(.hef, ufld_tail.onnx)은 git에 없다 — 만드는 법과 Pi 실측(차선 56ms)은 docs/ufld-hailo-conversion.md
+# 차량 검출(YOLO)은 아직 CPU(ONNX) 그대로다 (Hailo 이전은 별도 작업).
+#
+#   python -m src.main --config configs/pi5_ufld_hailo.yaml --source <영상>
+
+extends: pi5_ufld.yaml
+
+lane:
+  ufld:
+    backend: hailo
+    hef_path: data/models/ufld_aihub_aug.hef
+    tail_path: data/models/ufld_tail.onnx

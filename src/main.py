@@ -160,6 +160,7 @@ def run(config_path: str, source: str) -> None:
     finally:
         frame_source.close()
         sensor_source.close()
+        lane_detector.close()   # NPU(lane.ufld.backend: hailo) 자원 해제
         event_queue.close()
         summary = profiler.summary()
         if summary:

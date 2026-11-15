@@ -262,6 +262,7 @@ def run_stream(args: argparse.Namespace, cfg, detector: VehicleDetector, lane_de
         print("\n중단됨")
     finally:
         source.close()
+        lane_detector.close()
         for w in (out, raw):
             if w is not None:
                 w.release()
@@ -285,7 +286,10 @@ def main() -> None:
     lane_detector = create_lane_detector(cfg)   # lane.method: opencv | ufld
 
     if Path(args.source).suffix.lower() in IMAGE_SUFFIXES:
-        run_image(args, detector, lane_detector)
+        try:
+            run_image(args, detector, lane_detector)
+        finally:
+            lane_detector.close()
     else:
         run_stream(args, cfg, detector, lane_detector)
 

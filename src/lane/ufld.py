@@ -80,6 +80,33 @@ def preprocess(bgr: np.ndarray, spec: UFLDSpec) -> np.ndarray:
     return blob
 
 
+def preprocess_uint8(bgr: np.ndarray, spec: UFLDSpec) -> np.ndarray:
+    """BGR 프레임 → Hailo 입력 (input_h, input_w, 3) RGB uint8 HWC. 자르기는 `preprocess`와 같고,
+    ImageNet 정규화는 HEF 안에 들어 있어 하지 않는다 (docs/ufld-hailo-conversion.md 모델 스크립트)."""
+    resized_h = int(spec.input_h / spec.crop_ratio)
+    resized = cv2.resize(bgr, (spec.input_w, resized_h), interpolation=cv2.INTER_LINEAR)
+    return np.ascontiguousarray(resized[-spec.input_h:, :, ::-1])
+
+
+INPUT_FORMATS = ("float_nchw", "uint8_hwc")
+
+
+def preprocess_for(bgr: np.ndarray, spec: UFLDSpec, input_format: str) -> np.ndarray:
+    """백엔드 입력 형식에 맞는 전처리. float_nchw = `preprocess`, uint8_hwc = `preprocess_uint8`."""
+    if input_format == "float_nchw":
+        return preprocess(bgr, spec)
+    if input_format == "uint8_hwc":
+        return preprocess_uint8(bgr, spec)
+    raise ValueError(f"UFLD 백엔드 입력 형식 '{input_format}'을 모릅니다 — {INPUT_FORMATS} 중 하나")
+
+
+def blank_input(spec: UFLDSpec, input_format: str) -> np.ndarray:
+    """형식별 빈 입력 — 시작할 때 출력 형상 확인용."""
+    if input_format == "uint8_hwc":
+        return np.zeros((spec.input_h, spec.input_w, 3), dtype=np.uint8)
+    return np.zeros((1, 3, spec.input_h, spec.input_w), dtype=np.float32)
+
+
 def _softmax(x: np.ndarray, axis: int) -> np.ndarray:
     e = np.exp(x - x.max(axis=axis, keepdims=True))
     return e / e.sum(axis=axis, keepdims=True)
@@ -111,15 +138,21 @@ def decode_rows(
 
 
 class UFLDBackend(Protocol):
-    """추론 엔진 추상화 — ONNX Runtime, (향후) NPU 런타임, 테스트용 가짜 구현이 같은 모양을 따른다."""
+    """추론 엔진 추상화 — ONNX Runtime(CPU), Hailo NPU, 테스트용 가짜 구현이 같은 모양을 따른다.
+
+    `input_format`으로 받을 입력을 밝힌다 (`preprocess_for`). 없으면 float_nchw로 본다.
+    자원을 쥐는 백엔드(NPU)는 `close()`를 둔다 — UFLDLaneDetector.close()가 부른다."""
 
     def infer(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """입력 (1, 3, H, W) → (loc_row (grid, num_row, lanes), exist_row (2, num_row, lanes))."""
+        """입력 (float_nchw (1, 3, H, W) | uint8_hwc (H, W, 3)) →
+        (loc_row (grid, num_row, lanes), exist_row (2, num_row, lanes))."""
         ...
 
 
 class OnnxUFLDBackend:
     """ONNX Runtime CPU 실행. 출력 이름은 export 스크립트가 붙인 'loc_row', 'exist_row'."""
+
+    input_format = "float_nchw"
 
     def __init__(self, model_path: str | Path, num_threads: int = 0):
         import onnxruntime as ort  # Pi5에서도 설치되는 패키지지만, 가짜 백엔드 테스트는 import 없이 돌게 한다
@@ -143,3 +176,75 @@ class OnnxUFLDBackend:
     def infer(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         loc, exist = self._session.run(["loc_row", "exist_row"], {self._input: x})
         return loc[0], exist[0]
+
+
+class HailoUFLDBackend:
+    """Hailo-8 NPU + CPU 분할 실행 (docs/ufld-hailo-conversion.md).
+
+    - NPU(HEF): 입력 ~ `/pool/Conv` (백본, 계산량 대부분). Hailo 파서가 그 뒤 LayerNorm을 못 받고,
+      마지막 완전연결층은 가중치가 커서(fp32 487MB) 칩에 안 들어간다.
+    - CPU(`tail_path`, ONNX Runtime): 원본 ONNX에서 `/pool/Conv` 뒤를 떼어낸 모델. 출력 이름·형상이
+      원본과 같다 (loc_row, exist_row).
+
+    입력은 RGB uint8 HWC — ImageNet 정규화는 HEF 안에 있다. HEF 출력 (10, 50, 8) HWC는 FLOAT32로 받으면
+    HailoRT가 양자화를 풀어 주고, (1, 8, 10, 50)로 돌려 tail에 넣는다.
+    HW 파트가 Pi(HailoRT 4.23)에서 돌려 확인한 구현을 옮겼다.
+    """
+
+    input_format = "uint8_hwc"
+    _TIMEOUT_MS = 2000
+
+    def __init__(self, hef_path: str | Path, tail_path: str | Path, num_threads: int = 0):
+        for p in (hef_path, tail_path):
+            if not Path(p).exists():
+                raise FileNotFoundError(f"UFLD NPU 모델 파일이 없습니다: {p} — docs/ufld-hailo-conversion.md로 만들 것")
+        try:
+            # Pi에 apt(hailo-all)로 깔린다. 맥·PC·가짜 백엔드 테스트는 이 import 없이 돈다
+            from hailo_platform import FormatType, HailoSchedulingAlgorithm, VDevice  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "hailo_platform을 import할 수 없습니다 — Pi에서 'sudo apt install hailo-all' 후 "
+                "가상환경이 시스템 패키지를 보는지(--system-site-packages) 확인할 것"
+            ) from exc
+        import onnxruntime as ort
+
+        params = VDevice.create_params()
+        # 필수 — 빠뜨리면 HAILO_STREAM_NOT_ACTIVATED로 출력이 빈다 (hailo-apps 공식 코드와 같은 방식)
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        self._vdevice = VDevice(params)
+        self._ctx = None
+        try:
+            model = self._vdevice.create_infer_model(str(hef_path))
+            model.input().set_format_type(FormatType.UINT8)
+            model.output().set_format_type(FormatType.FLOAT32)
+            self._ctx = model.configure()
+            self._cfg = self._ctx.__enter__()
+            self._out = np.empty(model.output().shape, np.float32)      # (10, 50, 8) HWC
+            self._bind = self._cfg.create_bindings()
+            self._bind.output().set_buffer(self._out)
+
+            opts = ort.SessionOptions()
+            if num_threads > 0:
+                opts.intra_op_num_threads = num_threads
+            self._tail = ort.InferenceSession(str(tail_path), sess_options=opts, providers=["CPUExecutionProvider"])
+            self._tail_in = self._tail.get_inputs()[0].name
+        except Exception:
+            self.close()
+            raise
+        logger.info("UFLD NPU 로드: %s (+ CPU %s), HEF 출력 %s", hef_path, tail_path, self._out.shape)
+
+    def infer(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        self._bind.input().set_buffer(np.ascontiguousarray(x))
+        self._cfg.run([self._bind], self._TIMEOUT_MS)
+        feat = np.ascontiguousarray(self._out.transpose(2, 0, 1)[None])
+        loc, exist = self._tail.run(["loc_row", "exist_row"], {self._tail_in: feat})
+        return loc[0], exist[0]
+
+    def close(self) -> None:
+        """NPU 자원 해제. 여러 번 불러도 된다."""
+        if self._ctx is not None:
+            self._ctx.__exit__(None, None, None)
+            self._ctx = None
+        if self._vdevice is not None:
+            self._vdevice.release()
+            self._vdevice = None
