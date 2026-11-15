@@ -1,6 +1,6 @@
 # 이벤트 JSON 스키마 명세
 
-**버전** 0.8 (협의 중 — AI → HW 전달 형식(envelope) 4-1 추가. 서버 파트 협의는 여전히 대기)
+**버전** 0.9 (AI → HW 전달 형식 4-1, 서버로 보내는 위험 종류 5.2)
 **작성** 설만수 (AI 파트)
 **협의 대상** 주민규 (앱·서버 파트)
 **최종 수정** 2026-11-15
@@ -330,9 +330,24 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 | 6 | 누락 필드 | 앱에 추가로 필요한 정보 확인 | 앱·서버 |
 | 7 | 클립 사양 | 해상도·코덱·최대 용량 제한 | 양측 |
 | 8 | 메타/클립 join | C안 채택 시 메타데이터-클립 도착 시차(수 시간 가능) 동안 "클립 없는 이벤트"를 앱에 어떻게 표시할지 | 앱·서버 |
-| 9 | **스코프 변경 반영** | `risk.types`·`indicators` 변경안(5.1, AI 파트 확정) 수용 여부, 앱 표기 문구("음주운전 의심 거동") | 서버·앱 |
+| 9 | ~~**스코프 변경 반영**~~ | **2026-11-15 정리 (5.2)** — 서버로는 `riskType: "drunk_suspect"` 하나만 보낸다. 단서 목록(`risk.types`)·`indicators`는 AI 쪽 `event`에만 남는다. 서버 허용값에 `drunk_suspect`가 이미 있어 서버 변경 없음 | — |
 
-### 5.1 스코프 변경에 따른 변경 제안 (AI 파트 확정, 서버 파트 협의 대기)
+### 5.2 서버로 보내는 위험 종류 (2026-11-15 결정)
+
+**웹 서비스는 "음주 의심인가"만 알면 된다.** 이벤트는 단서가 2개 이상 겹칠 때만 생기므로(`risk-criteria.md` 4.2)
+서버에 도착한 이벤트는 전부 음주 의심이고, 신고 판단은 사람이 클립을 보고 한다. 그래서:
+
+| 구간 | 위험 종류 표현 |
+|---|---|
+| AI → HW (`event`, 4-1) | 그대로 — `risk.score`·`level`·`types`(단서 목록)·`indicators`. 판단 근거 설명, 오탐 분석, 임계값 실측에 필요 |
+| HW → 서버 | `riskType: "drunk_suspect"` 고정 + `riskScore`. 단서 목록·수치는 보내지 않는다 |
+
+- 변환은 HW 전송 코드가 한다. AI는 `event`를 바꾸지 않는다.
+- 서버 허용값(`drunk_suspect`, `lane_departure`, `sudden_accel`, `swerving`)에 `drunk_suspect`가 이미 있어 **서버 변경이 필요 없다**.
+- 5.1의 `risk.types` 변경 제안은 **AI 내부 출력**(`event`)의 정의로만 유효하다 — 서버 수용 여부를 더 기다리지 않는다.
+- "점수 + 단서 목록" 출력(`risk-criteria.md` 5장, 지도교수 확인)은 AI 결과물(로그·`event`)에서 지켜진다. 웹에 안 보여 주는 건 표시 범위의 결정이다.
+
+### 5.1 스코프 변경에 따른 변경 제안 (AI 파트 확정 — 서버로는 5.2대로 `drunk_suspect`만)
 
 2026-09-22 지도교수 면담으로 AI 파트 감지 대상이 **음주운전 의심 차량**으로 축소되었다 (`docs/risk-criteria.md` v0.7). 판단 근거가 NHTSA 차로 유지 단서로 좁혀지고, IMU는 판정 지표에서 빠져 자차 거동 보정용으로만 쓰인다. **2026-09-26, 단서 범위와 출력 형태(점수+단서목록)가 지도교수 확인으로 확정되었다** — 아래는 이제 AI 파트가 확정한 변경 제안이며, 서버 파트(주민규)의 수용 여부만 남았다.
 
@@ -387,5 +402,6 @@ python scripts/generate_dummy_event.py --count 10 --output samples/
 | 0.4 | 2026-09-22 | AI 파트 스코프 변경(음주운전 의심 차량 감지) — 5.1 변경 제안 신설(`risk.types`: swerving·drifting 추가, sudden_decel·sudden_accel·abrupt_lane_change 제거 / `indicators`: 횡방향 속도·표류 지속시간 추가, 자차 IMU 지표 제거), 협의 필요 9번 추가. 합의 전까지 3장 본문 유지 |
 | 0.5 | 2026-09-26 | 5.1 변경안이 지도교수 확인을 거쳐 AI 파트 확정안으로 전환(단서 범위·출력 형태 `risk-criteria.md` v0.7). 서버 파트(주민규) 수용 여부만 남음 — 3장 본문은 여전히 미변경 |
 | 0.6 | 2026-09-26 | `speed_irregular`(bbox 팽창률 기반, `risk-criteria.md` 1.4.1/v0.9) 채택 확정 — 5.1의 `risk.types`·`indicators` 표에 반영(`expansion_rate_peak_per_sec` 신규). AI 파트 내부 config(`configs/default.yaml`)는 서버 합의와 무관하게 지금 갱신, 서버로 나가는 JSON 필드명 확정은 여전히 협의 대기 |
+| 0.9 | 2026-11-15 | 5.2 서버로 보내는 위험 종류 — `riskType: "drunk_suspect"` 고정, 단서 목록·indicators는 AI `event`에만. 협의 9번 정리 |
 | 0.8 | 2026-11-15 | 4-1 AI → HW 전달 형식(envelope) 추가 — AI는 `event` 생성까지, 클립·location·큐·전송은 HW. `target_vehicle`은 envelope `target`으로 옮김(서버 전송 여부 TBD) |
 | 0.7 | 2026-09-27 | `src/event/builder.py`(실제 이벤트 메타데이터 생성 로직)와 `scripts/generate_dummy_event.py`가 5.1 제안을 구현하도록 갱신 — 서버 합의 전이지만 구체적 예시로 협의를 진행하기 위함. 2·3장 본문은 여전히 의도적으로 미변경 |
