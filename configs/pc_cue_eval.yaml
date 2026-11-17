@@ -1,0 +1,16 @@
+# PC에서 단서 분포를 뽑는 설정 (scripts/cue_distribution.py) — Pi 배포 설정과 같은 모델·입력을 CPU(ONNX)로 돌린다.
+# pi5_ufld.yaml(1280×720, UFLD 차선, 먼 영역 검출 켬)을 상속하고 측정을 틀어지게 하는 두 값만 바꾼다.
+# Pi(Hailo, 8비트 양자화)와 결과가 같은지는 같은 한국 영상을 양쪽에서 돌려 --compare로 확인한다.
+#
+#   python -m scripts.cue_distribution --config configs/pc_cue_eval.yaml --source <영상 폴더> --output data/processed/cue_dist/<이름>
+
+extends: pi5_ufld.yaml
+
+input:
+  # risk.speed_irregular 창(window_sec × fps 프레임)이 이 값으로 정해진다 — 영상 fps와 같아야 한다.
+  # BDD100K·AI Hub 주행 영상·시뮬레이션 영상은 30fps. pi5.yaml의 15는 Pi 카메라 값이다
+  fps: 30
+
+detection:
+  # pi5.yaml의 3을 되돌린다 — 건너뛴 프레임은 위치를 그대로 둬서 옆 이동 속도가 틀어진다(사행·스웨빙 값)
+  interval: 1

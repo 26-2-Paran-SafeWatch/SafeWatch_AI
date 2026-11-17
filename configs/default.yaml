@@ -77,6 +77,7 @@ lane:
     # 아래 형상 값은 가중치와 반드시 같아야 한다 — 다르면 시작할 때 에러. 튜닝 대상이 아님
     model_path: data/models/ufld_culane_res18.onnx
     num_threads: 4             # ONNX Runtime CPU 스레드 (0 = 기본값). backend: hailo면 뒷부분(tail)에 적용
+    onnx_providers: [CPUExecutionProvider]   # backend: onnx 실행 장치 순서. GPU 분석(Colab)은 CUDAExecutionProvider 앞에
     backend: onnx              # onnx(CPU, model_path 전체) | hailo(NPU 백본 hef_path + CPU 뒷부분 tail_path) — docs/ufld-hailo-conversion.md
     hef_path: data/models/ufld_aihub_aug.hef    # backend: hailo — 입력~/pool/Conv (Hailo-8)
     tail_path: data/models/ufld_tail.onnx       # backend: hailo — /pool/Conv 뒤 (CPU, num_threads 적용)

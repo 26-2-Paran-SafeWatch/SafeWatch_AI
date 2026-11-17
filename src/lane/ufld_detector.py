@@ -119,7 +119,8 @@ def _make_backend(u: Config) -> UFLDBackend:
     """lane.ufld.backend: onnx(CPU 전체, 기본) | hailo(NPU 백본 + CPU 뒷부분)."""
     kind = u.backend if "backend" in u else "onnx"
     if kind == "onnx":
-        return OnnxUFLDBackend(u.model_path, u.num_threads)
+        providers = list(u.onnx_providers) if "onnx_providers" in u else None
+        return OnnxUFLDBackend(u.model_path, u.num_threads, providers)
     if kind == "hailo":
         return HailoUFLDBackend(u.hef_path, u.tail_path, u.num_threads)
     raise ValueError(f"lane.ufld.backend '{kind}'를 모릅니다 — onnx | hailo")

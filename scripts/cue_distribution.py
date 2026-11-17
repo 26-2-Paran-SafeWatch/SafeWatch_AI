@@ -27,6 +27,9 @@
         --compare data/processed/cue_dist/bdd/tracks.csv data/processed/cue_dist/korea/tracks.csv \
         --output data/processed/cue_dist/compare
 
+이어서 하기 — 영상 하나 끝날 때마다 <output>/_per_video/에 저장한다. 끊긴 뒤 같은 명령을 다시 실행하면 끝난 영상은
+건너뛴다. 돌던 중간에 요약만 보고 싶으면 같은 명령에 --summary-only.
+
 결과: <output>/summary.md (표), tracks.csv (차량별 값), snapshots/*.jpg (--snapshots, 점수 상위 차량).
 비교 모드는 <output>/compare.md — 단서별 백분위를 나란히, 그리고 A의 백분위를 기준으로 삼았을 때 B에서 걸리는 비율.
 ⚠️ 영상 원본 프레임을 저장하므로(--snapshots) 밖으로 공유할 때는 비식별화 원칙(AGENTS.md 5)을 따른다.
@@ -36,7 +39,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -89,6 +94,23 @@ class TrackRecord:
     @property
     def judged_sec(self) -> float:
         return 0.0 if self.first_ts is None else self.last_ts - self.first_ts
+
+    def to_dict(self) -> dict:
+        """영상별 중간 저장용 (이어서 하기). 캡처는 파일로 따로 저장하고 여기선 뺀다."""
+        return {"video": self.video, "track_id": self.track_id, "first_ts": self.first_ts, "last_ts": self.last_ts,
+                "n_judged": self.n_judged, "peaks": self.peaks, "max_score": self.max_score,
+                "cues_seen": sorted(self.cues_seen), "best_key": list(self.best_key),
+                "best_frame_id": self.best_frame_id, "best_media_sec": self.best_media_sec, "best_cues": self.best_cues}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrackRecord":
+        r = cls(d["video"], int(d["track_id"]))
+        r.first_ts, r.last_ts, r.n_judged = d["first_ts"], d["last_ts"], int(d["n_judged"])
+        r.peaks = {k: float(v) for k, v in d["peaks"].items()}
+        r.max_score, r.cues_seen = int(d["max_score"]), set(d["cues_seen"])
+        r.best_key = (int(d["best_key"][0]), float(d["best_key"][1]))
+        r.best_frame_id, r.best_media_sec, r.best_cues = d["best_frame_id"], d["best_media_sec"], list(d["best_cues"])
+        return r
 
 
 class Collector:
@@ -289,6 +311,37 @@ def find_videos(sources: list[str]) -> list[Path]:
     return out
 
 
+PER_VIDEO = "_per_video"     # 영상별 중간 결과 — 다시 실행하면 끝난 영상은 건너뛴다 (Colab 끊김 대비)
+
+
+def _video_key(v: Path | str) -> str:
+    return Path(v).name
+
+
+def save_video_records(out: Path, video: str, records: list[TrackRecord]) -> None:
+    d = out / PER_VIDEO
+    (d / "snaps").mkdir(parents=True, exist_ok=True)
+    for r in records:
+        if r.snapshot is not None:
+            (d / "snaps" / f"{Path(video).stem}_t{r.track_id}.jpg").write_bytes(r.snapshot)
+    tmp = d / f"{_video_key(video)}.json.part"
+    tmp.write_text(json.dumps([r.to_dict() for r in records], ensure_ascii=False), encoding="utf-8")
+    tmp.replace(d / f"{_video_key(video)}.json")       # 다 쓴 뒤에 이름을 바꿔 '끝난 영상' 표시
+
+
+def load_video_records(out: Path, video: str) -> list[TrackRecord] | None:
+    """끝난 영상이면 그 차량 기록(캡처 포함), 아니면 None."""
+    path = out / PER_VIDEO / f"{_video_key(video)}.json"
+    if not path.exists():
+        return None
+    recs = [TrackRecord.from_dict(d) for d in json.loads(path.read_text(encoding="utf-8"))]
+    for r in recs:
+        snap = out / PER_VIDEO / "snaps" / f"{Path(r.video).stem}_t{r.track_id}.jpg"
+        if snap.exists():
+            r.snapshot = snap.read_bytes()
+    return recs
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="단서별 측정값 분포 (차량 단위)")
     p.add_argument("--config", required=True)
@@ -299,6 +352,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-sec", type=float, default=3.0, help="판단 구간이 이보다 짧게 보인 차량은 요약에서 뺀다")
     p.add_argument("--top", type=int, default=30, help="점수 상위 차량 목록 길이")
     p.add_argument("--snapshots", action="store_true", help="상위 차량의 그 순간을 jpg로 저장")
+    p.add_argument("--summary-only", action="store_true",
+                   help="영상은 돌리지 않고 지금까지 끝난 영상(_per_video)으로 요약만 다시 만든다")
     return p.parse_args()
 
 
@@ -326,15 +381,38 @@ def main() -> None:
         print(f"⚠️ detection.interval={cfg.detection.interval} — 검출을 건너뛴 프레임은 위치를 그대로 두어 옆 이동 속도가 "
               "틀어진다(사행·스웨빙 값에 영향). NPU면 interval 1 설정으로 재는 것을 권한다.")
 
+    out = Path(args.output)
     col = Collector(cfg, args.snapshots)
+    want_fps = float(cfg.input.fps)
+    done_records: list[TrackRecord] = []
     for i, v in enumerate(videos, 1):
-        print(f"[{i}/{len(videos)}] {v}")
+        prev = load_video_records(out, str(v))
+        if prev is not None:                          # 이미 끝난 영상 — 이어서 하기
+            done_records += prev
+            print(f"[{i}/{len(videos)}] {v.name} — 이미 처리됨, 건너뜀 (차량 {len(prev)}대)")
+            continue
+        cap = cv2.VideoCapture(str(v))
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        cap.release()
+        note = ""
+        if fps > 0 and abs(fps - want_fps) > 1:
+            note = (f"  ⚠️ 영상 {fps:.0f}fps ≠ input.fps {want_fps:.0f} — 속도 불규칙 창 길이가 "
+                    f"{want_fps / fps:.2f}배로 틀어진다 (fps가 같은 설정으로 돌릴 것)")
+        print(f"[{i}/{len(videos)}] {v}{note}", flush=True)
+        if args.summary_only:
+            continue
         col.video = str(v)
+        col.records = {}
+        t0 = time.time()
         pipeline.run(args.config, str(v), event_sink=_NoEvents(), on_assessment=col.hook)
+        recs = list(col.records.values())
+        save_video_records(out, str(v), recs)
+        done_records += recs
+        print(f"    차량 {len(recs)}대, {time.time() - t0:.0f}초", flush=True)
 
     header = (f"# 단서 분포 — {len(videos)}개 영상, 설정 `{args.config}`\n\n"
               f"영상: {', '.join(v.name for v in videos[:10])}{' …' if len(videos) > 10 else ''}")
-    path = write_outputs(Path(args.output), list(col.records.values()), col.metrics, args.min_sec, args.top, header)
+    path = write_outputs(out, done_records, col.metrics, args.min_sec, args.top, header)
     print(path.read_text(encoding="utf-8"))
     print(f"\n저장됨: {path}")
 

@@ -83,3 +83,21 @@ def test_compare_two_datasets(tmp_path):
     row = next(line for line in text.splitlines() if line.startswith("| 스웨빙"))
     # A 95% 값(≈0.95)을 기준으로 삼으면 B(두 배)에선 절반 넘게 걸린다
     assert float(row.split("|")[6].strip().split("%")[0]) > 50
+
+
+def test_per_video_save_and_resume(tmp_path):
+    from scripts.cue_distribution import load_video_records, save_video_records
+
+    col = Collector(CFG, snapshots=True)
+    col.video = "/x/v1.mov"
+    _feed(col, 3, 0.0, 2, 0.5, score=20, types=("weaving",))
+    _feed(col, 3, 4.0, 5, 1.2, score=40, types=("weaving", "swerving"))
+    recs = list(col.records.values())
+    assert load_video_records(tmp_path, "/x/v1.mov") is None          # 아직 안 끝난 영상
+    save_video_records(tmp_path, "/x/v1.mov", recs)
+    back = load_video_records(tmp_path, "/other/dir/v1.mov")           # 경로가 달라도 파일 이름으로 찾음
+    assert len(back) == 1
+    a, b = recs[0], back[0]
+    assert (b.track_id, b.peaks, b.max_score, b.cues_seen, b.best_key, b.judged_sec) == \
+        (a.track_id, a.peaks, a.max_score, a.cues_seen, a.best_key, a.judged_sec)
+    assert b.snapshot == a.snapshot and not list(tmp_path.rglob("*.part"))

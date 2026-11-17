@@ -154,7 +154,9 @@ class OnnxUFLDBackend:
 
     input_format = "float_nchw"
 
-    def __init__(self, model_path: str | Path, num_threads: int = 0):
+    def __init__(self, model_path: str | Path, num_threads: int = 0, providers: list[str] | None = None):
+        """providers — ONNX Runtime 실행 장치 순서 (lane.ufld.onnx_providers). 기본 CPU.
+        GPU(Colab 분석 등)는 ["CUDAExecutionProvider", "CPUExecutionProvider"] — onnxruntime-gpu가 있어야 한다."""
         import onnxruntime as ort  # Pi5에서도 설치되는 패키지지만, 가짜 백엔드 테스트는 import 없이 돌게 한다
 
         path = Path(model_path)
@@ -165,13 +167,18 @@ class OnnxUFLDBackend:
         opts = ort.SessionOptions()
         if num_threads > 0:
             opts.intra_op_num_threads = num_threads
-        self._session = ort.InferenceSession(str(path), sess_options=opts, providers=["CPUExecutionProvider"])
+        wanted = list(providers) if providers else ["CPUExecutionProvider"]
+        available = set(ort.get_available_providers())
+        use = [p for p in wanted if p in available] or ["CPUExecutionProvider"]
+        if use != wanted:
+            logger.warning("UFLD ONNX 실행 장치 %s 중 %s만 가능 — onnxruntime-gpu 설치 여부 확인", wanted, use)
+        self._session = ort.InferenceSession(str(path), sess_options=opts, providers=use)
         self._input = self._session.get_inputs()[0].name
         names = [o.name for o in self._session.get_outputs()]
         missing = {"loc_row", "exist_row"} - set(names)
         if missing:
             raise ValueError(f"UFLD ONNX 출력에 {sorted(missing)}가 없습니다 (출력: {names})")
-        logger.info("UFLD ONNX 로드: %s", path)
+        logger.info("UFLD ONNX 로드: %s (실행 장치 %s)", path, self._session.get_providers())
 
     def infer(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         loc, exist = self._session.run(["loc_row", "exist_row"], {self._input: x})
