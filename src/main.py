@@ -31,17 +31,22 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from typing import Callable
 
 from src.detection.detector import VehicleDetector
 from src.event.builder import EventIdGenerator, build_event_envelope, build_event_metadata
 from src.event.sink import EventSink, FileEventSink
 from src.input.sensors import create_sensor_source
+from src.input.frame import Frame
 from src.input.source import FrameSource, create_source
 from src.lane import create_lane_detector
 from src.metrics.offset import OffsetCalculator
+from src.metrics.types import VehicleTimeSeries
 from src.risk.frame_quality import FrameQualityChecker
 from src.risk.scorer import RiskScorer
+from src.risk.types import RiskAssessment
 from src.tracking.tracker import VehicleTracker
+from src.tracking.types import TrackedVehicle
 from src.utils.config import load_config
 from src.utils.logging_setup import setup_logging
 from src.utils.profiler import profiler
@@ -63,11 +68,13 @@ def run(
     source: str,
     frame_source: FrameSource | None = None,
     event_sink: EventSink | None = None,
+    on_assessment: Callable[[Frame, TrackedVehicle, VehicleTimeSeries, RiskAssessment], None] | None = None,
 ) -> None:
     """파이프라인 실행. HW 실행 스크립트는 자기 카메라(`frame_source`)와 sink(`event_sink`)를 넘긴다.
 
     `source`는 넘긴 frame_source가 있어도 envelope의 trigger.source에 쓰인다 — 카메라면 "camera".
     넘긴 frame_source·event_sink도 끝날 때 이 함수가 `close()`한다.
+    `on_assessment`는 차량별 위험 판단마다 불린다 — 분석 도구(`scripts/cue_distribution.py`)용, 판단에는 영향 없음.
     """
     cfg = load_config(config_path)
     setup_logging(cfg)
@@ -134,6 +141,8 @@ def run(
                     track, ts, lane_valid=lane.valid, timestamp=frame.timestamp,
                     ego_speed_kmh=sensor_reading.gps_speed_kmh, frame_quality_ok=frame_quality_ok,
                 )
+                if on_assessment is not None:
+                    on_assessment(frame, track, ts, assessment)
                 if assessment.should_emit_event:
                     event = build_event_metadata(
                         event_id=event_id_generator.next(frame.timestamp),

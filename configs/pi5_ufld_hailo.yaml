@@ -11,6 +11,9 @@ extends: pi5_ufld.yaml
 
 detection:
   backend: hailo
+  # pi5.yaml의 3(CPU가 느려서 3프레임마다 검출)을 되돌린다 — 건너뛴 프레임은 추적이 위치를 그대로 둬서 옆 이동 속도가
+  # 틀어진다(사행·스웨빙 판정에 영향, tracker.interpolate). NPU에서는 매 프레임 검출로 약 11fps(2026-11-15 Pi, 시연 스크립트)
+  interval: 1
   weights: data/models/yolov8n-safewatch_hailo_model
 
 lane:
