@@ -1,0 +1,13 @@
+# ⚠️ 시험 브랜치(test/carla-sim5-event) 전용 — Pi(Hailo)에서 CARLA 음주 사행 영상으로 이벤트를 내기 위한 설정.
+# 측정 범위만 넓힌다(이유는 carla_sim_test.yaml). Pi에서는 아직 돌려보지 않았다.
+#
+#   python -m src.main --config configs/pi5_ufld_hailo_carla.yaml --source <음주_심영상_N.mp4>
+
+extends: pi5_ufld_hailo.yaml
+
+input:
+  fps: 24
+
+lane:
+  ufld:
+    measure_range_ratio: [0.50, 0.98]

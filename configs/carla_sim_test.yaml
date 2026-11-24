@@ -1,0 +1,17 @@
+# ⚠️ 시험 브랜치(test/carla-sim5-event) 전용 — CARLA 음주 사행 영상(음주_심영상_5, 진폭 1.2m)에서 이벤트를 내기 위한 설정.
+# 측정 범위만 넓힌다. 판단 기준(점수·단서 임계값)은 그대로. dev에 병합하지 않는다.
+#
+#   python -m src.main --config configs/carla_sim_test.yaml --source <음주_심영상_N.mp4>
+#
+# 기본값에서 이벤트 0건인 이유(2026-11-24): CARLA 카메라(화각 100°, 앞차 15m)에서 앞차 바닥이 화면 높이 약 0.55라
+# 측정 범위(0.58~) 밖 — 판정 자체를 안 한다.
+
+extends: pc_cue_eval.yaml
+
+input:
+  fps: 24   # 메신저 전송으로 30 → 24fps로 바뀐 사본 기준. 원본(30fps)을 쓰면 30으로 되돌린다
+
+lane:
+  ufld:
+    # 0.54~0.58은 offset 오차 0.10 초과 약 6~7%, 그 위는 12~20%(노트북 29~31번) — 오차가 큰 구간까지 잰다
+    measure_range_ratio: [0.50, 0.98]
