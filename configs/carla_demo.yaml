@@ -1,0 +1,15 @@
+# ⚠️ 기말 발표 시연용 (test/carla-sim5-event 브랜치 전용) — CARLA 음주 사행 영상에서 이벤트를 안정적으로 내기 위한 설정.
+# 판단 기준 정식 변경이 아니다(risk-criteria.md 4.3 미결·4.4 개정안 확정 전). dev에 병합하지 않는다.
+# PC/맥 확인용. Pi는 pi5_ufld_hailo_demo.yaml
+#
+#   python -m src.main --config configs/carla_demo.yaml --source <음주_심영상_N.mp4>
+#
+# carla_sim_test.yaml(측정 범위 0.50)만으로는 1.2m 영상만 이벤트가 나고, 그 세 번째 단서(속도 불규칙)가 오검출 박스로
+# 생긴 가짜라 환경에 따라 안 날 수 있다. 시작 점수를 낮춰 사행+스웨빙 2개(실제 거동)로 이벤트를 낸다.
+
+extends: carla_sim_test.yaml
+
+risk:
+  hysteresis:
+    start_score: 40   # 단서 2개에서 이벤트 (기본 60 = 단서 3개)
+    end_score: 20     # 단서 1개 이하로 줄면 끝 (기본 40 — 시작과 같으면 경계에서 켜졌다 꺼졌다 함)

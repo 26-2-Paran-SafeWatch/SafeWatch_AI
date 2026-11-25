@@ -1,0 +1,13 @@
+# ⚠️ 기말 발표 시연용 (test/carla-sim5-event 브랜치 전용) — Pi(Hailo)에서 CARLA 음주 사행 영상으로 이벤트를 내는 설정.
+# 값과 이유는 carla_demo.yaml과 같다. 판단 기준 정식 변경 아님, dev 병합 안 함.
+#
+#   python -m src.main --config configs/pi5_ufld_hailo_demo.yaml --source <음주_심영상_N.mp4>
+#
+# fps는 pi5_ufld_hailo_carla.yaml의 24(메신저 사본 기준)를 이어받는다. 원본 30fps 영상이면 input.fps를 30으로.
+
+extends: pi5_ufld_hailo_carla.yaml
+
+risk:
+  hysteresis:
+    start_score: 40
+    end_score: 20
