@@ -23,7 +23,9 @@ import numpy as np
 
 from src.detection.types import VehicleBox
 from src.lane.types import LaneModel
-from src.lane.ufld import OnnxUFLDBackend, UFLDBackend, UFLDSpec, decode_rows, preprocess
+from src.lane.ufld import (
+    HailoUFLDBackend, OnnxUFLDBackend, UFLDBackend, UFLDSpec, blank_input, decode_rows, preprocess_for,
+)
 from src.lane.ufld_guard import LaneGuard
 from src.utils.config import Config
 from src.utils.profiler import profiler
@@ -50,20 +52,30 @@ class UFLDLaneDetector:
                 f"(행 앵커 위끝 {u.row_anchor_range[0]} 이상, 위 < 아래 ≤ 1)"
             )
         self._guard = LaneGuard(u.guard, self._spec.row_anchor, tuple(float(v) for v in u.guard_range_ratio))
-        self._backend = backend if backend is not None else OnnxUFLDBackend(u.model_path, u.num_threads)
-        self._verify_backend()
+        self._backend = backend if backend is not None else _make_backend(u)
+        self._input_format: str = getattr(self._backend, "input_format", "float_nchw")
+        try:
+            self._verify_backend()
+        except Exception:
+            self.close()
+            raise
 
     def _verify_backend(self) -> None:
         """빈 입력 한 번으로 출력 형상을 확인한다 (첫 추론 지연을 미리 치르는 효과도 있다)."""
         s = self._spec
-        x = np.zeros((1, 3, s.input_h, s.input_w), dtype=np.float32)
-        loc, exist = self._backend.infer(x)
+        loc, exist = self._backend.infer(blank_input(s, self._input_format))
         want_loc, want_exist = (s.grid_num, s.num_row, s.num_lanes), (2, s.num_row, s.num_lanes)
         if tuple(loc.shape) != want_loc or tuple(exist.shape) != want_exist:
             raise ValueError(
                 f"UFLD 출력 형상 {tuple(loc.shape)}, {tuple(exist.shape)}이 설정 {want_loc}, {want_exist}과 다릅니다 "
                 "— 가중치와 lane.ufld 설정(grid_num·num_row·num_lanes)을 맞출 것"
             )
+
+    def close(self) -> None:
+        """백엔드 자원 해제 (NPU). 파이프라인 종료 때 부른다. CPU 백엔드는 할 일 없음."""
+        close = getattr(self._backend, "close", None)
+        if close is not None:
+            close()
 
     def reset(self) -> None:
         """영상(주행)이 바뀔 때 부른다 — 차로 폭 기록을 비운다."""
@@ -82,7 +94,7 @@ class UFLDLaneDetector:
         with profiler.stage("lane"):
             try:
                 with profiler.stage("lane_infer"):
-                    loc, exist = self._backend.infer(preprocess(image, self._spec))
+                    loc, exist = self._backend.infer(preprocess_for(image, self._spec, self._input_format))
                 lanes = decode_rows(loc, exist, self._spec, w, h)
                 left, right = lanes[self._ego[0]], lanes[self._ego[1]]
                 ts = time.monotonic() if timestamp is None else timestamp
@@ -100,3 +112,15 @@ class UFLDLaneDetector:
             left_points=left, right_points=right, measure_y_range=measure,
             reject_reason=result.reason,
         )
+
+
+
+def _make_backend(u: Config) -> UFLDBackend:
+    """lane.ufld.backend: onnx(CPU 전체, 기본) | hailo(NPU 백본 + CPU 뒷부분)."""
+    kind = u.backend if "backend" in u else "onnx"
+    if kind == "onnx":
+        providers = list(u.onnx_providers) if "onnx_providers" in u else None
+        return OnnxUFLDBackend(u.model_path, u.num_threads, providers)
+    if kind == "hailo":
+        return HailoUFLDBackend(u.hef_path, u.tail_path, u.num_threads)
+    raise ValueError(f"lane.ufld.backend '{kind}'를 모릅니다 — onnx | hailo")

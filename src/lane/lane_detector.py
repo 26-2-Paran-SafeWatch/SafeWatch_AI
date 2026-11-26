@@ -90,6 +90,9 @@ class LaneDetector:
         self._perspective = PerspectiveTransformer(cfg)
         self._expected_width: float = self._perspective.expected_lane_width_px
 
+    def close(self) -> None:
+        """UFLD 경로와 같은 모양 — 쥔 자원이 없어 할 일 없음."""
+
     @property
     def perspective(self) -> PerspectiveTransformer:
         """시각화 등에서 bird's-eye-view ↔ 원본 좌표 변환이 필요할 때 사용."""

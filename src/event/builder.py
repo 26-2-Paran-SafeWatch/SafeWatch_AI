@@ -9,19 +9,23 @@
 필드를 쓰므로, 문서 2·3장과 코드가 당장은 서로 다른 스냅샷을 보여준다.
 서버 합의가 끝나면 문서 본문을 갱신해 일치시킨다.
 
-**이 모듈이 만들지 않는 것** — 영상 클립 추출·비식별화·전송 큐 적재는
-EVENT 모듈의 나머지 책임이지만, 링 버퍼 요청 인터페이스가 HW 파트와
-아직 협의되지 않아 미구현이다 (system-architecture.md "아직 남은 것").
-그래서 `clip`·`location`은 호출부가 값을 못 주면 그대로 비워 둔다 —
-스키마에서는 필수(`✓`)지만, 없는 값을 지어내는 것보다 정직하게 비우는
-쪽을 택했다.
+**역할 나누기 (2026-11-15 HW 파트와 합의)** — AI는 이벤트 JSON을 만들어 HW에
+넘기는 데까지만 한다. 영상 클립 자르기, `clip`·`location` 채우기, 큐, 재시도,
+서버 전송은 HW 파트(SafeWatch_HW)가 맡는다. 그래서 `build_event_metadata`는
+`clip`·`location`을 넣지 않는다 — 최종 서버 JSON = event + location + clip이고,
+HW는 event 안의 값을 고치지 않는다.
+
+`build_event_envelope`가 HW에 넘기는 묶음(event / trigger / target)을 만든다.
+형식은 docs/event-schema.md "AI → HW 전달 형식(envelope)".
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
+from src.input.frame import Frame
 from src.metrics.types import VehicleTimeSeries
 from src.risk.types import RiskAssessment
 from src.tracking.types import TrackedVehicle
@@ -59,27 +63,18 @@ def build_event_metadata(
     device_id: str,
     timestamp: float,
     assessment: RiskAssessment,
-    series: VehicleTimeSeries,
-    track: TrackedVehicle,
     cfg: Config,
     model_version: str,
     rule_version: str,
-    location: dict[str, float] | None = None,
-    clip: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """이벤트 JSON 메타데이터를 만든다. `docs/event-schema.md` 2장 구조를 따른다.
-
-    Args:
-        location: GPS 연결 전까지는 None — 스키마는 "GPS 미수신 시 객체
-            전체를 생략"하는 방안을 검토 중이므로(3.5) 그 방식을 따른다.
-        clip: 링 버퍼 연동 전까지는 None. 채워지면 그대로 통과시킨다.
-    """
+    """서버로 나가는 이벤트 JSON의 AI 몫(event). `docs/event-schema.md` 2장 구조에서
+    `clip`·`location`(HW가 붙임)과 `target_vehicle`(envelope의 target으로 옮김 — 서버로
+    보낼지는 서버 파트 결정 전까지 TBD)을 뺀 것이다."""
     indicators = {
         "observation_window_sec": cfg.risk.observation_window_sec,
         **assessment.indicators,
     }
-
-    event: dict[str, Any] = {
+    return {
         "event_id": event_id,
         "device_id": device_id,
         "timestamp": datetime.fromtimestamp(timestamp, tz=KST).isoformat(timespec="milliseconds"),
@@ -89,12 +84,6 @@ def build_event_metadata(
             "types": assessment.types,
         },
         "indicators": indicators,
-        "target_vehicle": {
-            "track_id": track.track_id,
-            "tracked_duration_sec": series.observed_duration_sec,
-            # TODO: 평균 검출 신뢰도의 누적 이력이 아직 없다 — 최신 프레임 값으로 대체
-            "avg_detection_confidence": track.box.confidence,
-        },
         "meta": {
             "model_version": model_version,
             "rule_version": rule_version,
@@ -102,9 +91,42 @@ def build_event_metadata(
         },
     }
 
-    if location is not None:
-        event["location"] = location
-    if clip is not None:
-        event["clip"] = clip
 
-    return event
+def build_event_target(track: TrackedVehicle, series: VehicleTimeSeries, frame_size: tuple[int, int]) -> dict[str, Any]:
+    """envelope의 target — 서버에 안 보내는 참고 정보. HW가 대상 차량 표시·번호판 블러 위치에 쓴다."""
+    b = track.box
+    return {
+        "track_id": track.track_id,
+        "box": [round(b.x1), round(b.y1), round(b.x2), round(b.y2)],   # 원본 프레임 좌표 [x1, y1, x2, y2]
+        "frame_size": [int(frame_size[0]), int(frame_size[1])],      # [width, height]
+        "tracked_duration_sec": series.observed_duration_sec,
+        # TODO: 평균 검출 신뢰도의 누적 이력이 아직 없다 — 최신 프레임 값으로 대체
+        "avg_detection_confidence": track.box.confidence,
+    }
+
+
+def trigger_source(source: str) -> str:
+    """envelope trigger.source — 카메라면 "camera", 영상 파일이면 절대 경로."""
+    return source if source == "camera" else str(Path(source).resolve())
+
+
+def build_event_envelope(
+    event: dict[str, Any],
+    frame: Frame,
+    track: TrackedVehicle,
+    series: VehicleTimeSeries,
+    source: str,
+) -> dict[str, Any]:
+    """AI → HW 전달 묶음. event = 서버로 나가는 부분, trigger = HW가 클립을 자를 기준,
+    target = 서버에 안 보내는 참고 정보. 클립 전·후 길이는 HW config가 정한다."""
+    h, w = frame.image.shape[:2]
+    return {
+        "event": event,
+        "trigger": {
+            "epoch": frame.timestamp,          # 판정이 켜진 프레임 시각. 카메라면 HW 링버퍼와 같은 시계(time.time())
+            "frame_id": frame.frame_id,
+            "source": trigger_source(source),
+            "video_sec": frame.media_sec,      # 영상 파일 입력일 때만 영상 안 시각, 카메라는 None
+        },
+        "target": build_event_target(track, series, (w, h)),
+    }

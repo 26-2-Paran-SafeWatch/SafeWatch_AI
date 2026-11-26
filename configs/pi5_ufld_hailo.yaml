@@ -1,0 +1,23 @@
+# Pi5 + Hailo-8 NPU — pi5_ufld.yaml을 상속하고 차량 검출(YOLO)과 차선 모델(UFLDv2)을 NPU로 돌린다.
+# 모델 파일은 git에 없다.
+# - 차선: NPU 백본(.hef) + CPU 뒷부분(ufld_tail.onnx) — 만드는 법·Pi 실측(차선 56ms)은 docs/ufld-hailo-conversion.md
+# - 차량: Ultralytics format=hailo 내보내기 폴더(.hef + metadata.yaml + nms_config.json).
+#   Ultralytics로 바로 열면 장치를 따로 열어 차선과 충돌한다(HAILO_OUT_OF_PHYSICAL_DEVICES) — 그래서 backend: hailo로
+#   공유 장치 위에서 직접 실행한다 (src/detection/hailo_yolo.py). Ultralytics 단독 확인(2026-11-15): 추론 9.4ms
+#
+#   python -m src.main --config configs/pi5_ufld_hailo.yaml --source <영상>
+
+extends: pi5_ufld.yaml
+
+detection:
+  backend: hailo
+  # pi5.yaml의 3(CPU가 느려서 3프레임마다 검출)을 되돌린다 — 건너뛴 프레임은 추적이 위치를 그대로 둬서 옆 이동 속도가
+  # 틀어진다(사행·스웨빙 판정에 영향, tracker.interpolate). NPU에서는 매 프레임 검출로 약 11fps(2026-11-15 Pi, 시연 스크립트)
+  interval: 1
+  weights: data/models/yolov8n-safewatch_hailo_model
+
+lane:
+  ufld:
+    backend: hailo
+    hef_path: data/models/ufld_aihub_aug.hef
+    tail_path: data/models/ufld_tail.onnx

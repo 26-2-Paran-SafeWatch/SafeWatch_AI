@@ -1,9 +1,9 @@
 # 이벤트 JSON 스키마 명세
 
-**버전** 0.7 (협의 중 — 5.1 제안을 실제 구현(`src/event/builder.py`)에 반영, 서버 파트 협의는 여전히 대기)
+**버전** 0.9 (AI → HW 전달 형식 4-1, 서버로 보내는 위험 종류 5.2)
 **작성** 설만수 (AI 파트)
 **협의 대상** 주민규 (앱·서버 파트)
-**최종 수정** 2026-09-22
+**최종 수정** 2026-11-15
 
 ---
 
@@ -249,6 +249,75 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 
 ---
 
+## 4-1. AI → HW 전달 형식 (envelope)
+
+**2026-11-15 HW 파트(강섬희)와 합의.** 이 장은 서버로 나가는 형식이 아니라 **Pi 안에서 AI가 HW에 넘기는 형식**이다.
+
+### 역할 나누기
+
+| 파트 | 하는 일 |
+|---|---|
+| AI (SafeWatch_AI) | 검출 → 추적 → 차선 → 위치 → 판단 → 이벤트 JSON(`event`) 생성까지 |
+| HW (SafeWatch_HW) | 영상 클립 자르기, `clip`·`location` 채우기, 큐, 재시도, 서버 전송, 디스크 정리 |
+
+**최종 서버 JSON = `event` + `location` + `clip`.** HW는 `event` 안의 값을 고치지 않는다.
+
+### 넘기는 형식
+
+이벤트가 확정되는 순간(`assessment.should_emit_event`) 아래 dict 하나를 `EventSink.publish()`에 넘긴다
+([`src/event/builder.py`](../src/event/builder.py) `build_event_envelope`).
+
+```json
+{
+  "event": {
+    "event_id": "evt_20261115_143022_001",
+    "device_id": "safewatch-dev-001",
+    "timestamp": "2026-11-15T14:30:22.451+09:00",
+    "risk": {"score": 60, "level": "medium", "types": ["weaving", "swerving"]},
+    "indicators": {"observation_window_sec": 10.0, "...": "..."},
+    "meta": {"model_version": "...", "rule_version": "...", "confidence_gate_passed": true}
+  },
+  "trigger": {"epoch": 1794725422.451, "frame_id": 1234, "source": "camera", "video_sec": null},
+  "target": {
+    "track_id": 3, "box": [252, 164, 348, 238], "frame_size": [1280, 720],
+    "tracked_duration_sec": 12.4, "avg_detection_confidence": 0.81
+  }
+}
+```
+
+| 부분 | 필드 | 설명 |
+|---|---|---|
+| `event` | (2·3장 + 5.1) | 서버로 그대로 나가는 부분, AI 책임. `event_id`·`timestamp`(KST ISO 밀리초) 규칙은 3.1과 같다. **`clip`·`location`은 넣지 않는다**(HW가 붙임). **`target_vehicle`은 빼서 `target`으로 옮겼다** — 서버로 보낼지는 TBD(아래) |
+| `trigger` | `epoch` | 판정이 켜진 프레임의 `frame.timestamp`(초, epoch). 카메라 입력이면 HW 링버퍼도 같은 시계(`time.time()`) |
+| | `frame_id` | 그 프레임 번호 |
+| | `source` | 카메라면 `"camera"`, 영상 파일이면 그 파일의 절대 경로 |
+| | `video_sec` | 영상 파일 입력일 때만 그 프레임의 영상 안 시각(초, `Frame.media_sec`). 카메라면 `null` |
+| `target` | `box` | 원본 프레임 좌표 `[x1, y1, x2, y2]` |
+| | `frame_size` | `[width, height]` |
+| | 나머지 | 이전 `target_vehicle`과 같은 값. 서버에 안 보내는 참고 정보 — HW가 대상 차량 표시·번호판 블러 위치에 쓴다 |
+
+클립 전·후 길이는 HW config에서 정한다. AI는 넘기지 않는다.
+
+### 넘기는 방법
+
+- [`src/event/sink.py`](../src/event/sink.py) `EventSink` Protocol — `publish(envelope)`(바로 돌아와야 함), `close()`.
+- 기본 구현 `FileEventSink` — `event.sink_dir`(기본 `data/processed/outbox`)에 `<event_id>.json`으로 저장. 임시 파일에 쓴 뒤 `os.replace`. PC 개발·테스트용.
+- 실기기 — HW 실행 스크립트가 `src.main.run(config, "camera", frame_source=<HW 카메라>, event_sink=<HW sink>)`로 넘긴다.
+  Pi 카메라는 한 프로세스만 열 수 있어서 HW가 카메라를 열어 H.264는 링버퍼로, RGB 프레임은 AI로 나눠 준다.
+  FrameSource 계약: `frames()`가 `Frame(image BGR, timestamp, frame_id, media_sec)`을 내고, `close()`가 있다.
+- `publish`에서 예외가 나도 파이프라인은 멈추지 않는다(`logger.exception`으로 남김).
+- 로그 줄 `frame_id=%d 음주운전 의심 거동 감지 — <event JSON>`은 형식을 유지한다 — HW 테스트 도구가 파싱한다.
+
+### 정해지지 않은 것 (TBD)
+
+| 항목 | 결정 |
+|---|---|
+| `target_vehicle`을 서버에 보낼지 | 주민규(서버) |
+| 영상 업로드 API, `event`의 `clip` 필드를 언제 채워 보낼지 | HW·서버 |
+| 실기기 `device_id` | 미정 (`configs/default.yaml` `event.device_id`) |
+
+---
+
 ## 5. 협의 필요 사항
 
 | 번호 | 항목 | 내용 | 담당 |
@@ -261,9 +330,24 @@ JSON에 영상을 직접 담지 않으며, 전송 방식은 아래 세 안 중 �
 | 6 | 누락 필드 | 앱에 추가로 필요한 정보 확인 | 앱·서버 |
 | 7 | 클립 사양 | 해상도·코덱·최대 용량 제한 | 양측 |
 | 8 | 메타/클립 join | C안 채택 시 메타데이터-클립 도착 시차(수 시간 가능) 동안 "클립 없는 이벤트"를 앱에 어떻게 표시할지 | 앱·서버 |
-| 9 | **스코프 변경 반영** | `risk.types`·`indicators` 변경안(5.1, AI 파트 확정) 수용 여부, 앱 표기 문구("음주운전 의심 거동") | 서버·앱 |
+| 9 | ~~**스코프 변경 반영**~~ | **2026-11-15 정리 (5.2)** — 서버로는 `riskType: "drunk_suspect"` 하나만 보낸다. 단서 목록(`risk.types`)·`indicators`는 AI 쪽 `event`에만 남는다. 서버 허용값에 `drunk_suspect`가 이미 있어 서버 변경 없음 | — |
 
-### 5.1 스코프 변경에 따른 변경 제안 (AI 파트 확정, 서버 파트 협의 대기)
+### 5.2 서버로 보내는 위험 종류 (2026-11-15 결정)
+
+**웹 서비스는 "음주 의심인가"만 알면 된다.** 이벤트는 단서가 2개 이상 겹칠 때만 생기므로(`risk-criteria.md` 4.2)
+서버에 도착한 이벤트는 전부 음주 의심이고, 신고 판단은 사람이 클립을 보고 한다. 그래서:
+
+| 구간 | 위험 종류 표현 |
+|---|---|
+| AI → HW (`event`, 4-1) | 그대로 — `risk.score`·`level`·`types`(단서 목록)·`indicators`. 판단 근거 설명, 오탐 분석, 임계값 실측에 필요 |
+| HW → 서버 | `riskType: "drunk_suspect"` 고정 + `riskScore`. 단서 목록·수치는 보내지 않는다 |
+
+- 변환은 HW 전송 코드가 한다. AI는 `event`를 바꾸지 않는다.
+- 서버 허용값(`drunk_suspect`, `lane_departure`, `sudden_accel`, `swerving`)에 `drunk_suspect`가 이미 있어 **서버 변경이 필요 없다**.
+- 5.1의 `risk.types` 변경 제안은 **AI 내부 출력**(`event`)의 정의로만 유효하다 — 서버 수용 여부를 더 기다리지 않는다.
+- "점수 + 단서 목록" 출력(`risk-criteria.md` 5장, 지도교수 확인)은 AI 결과물(로그·`event`)에서 지켜진다. 웹에 안 보여 주는 건 표시 범위의 결정이다.
+
+### 5.1 스코프 변경에 따른 변경 제안 (AI 파트 확정 — 서버로는 5.2대로 `drunk_suspect`만)
 
 2026-09-22 지도교수 면담으로 AI 파트 감지 대상이 **음주운전 의심 차량**으로 축소되었다 (`docs/risk-criteria.md` v0.7). 판단 근거가 NHTSA 차로 유지 단서로 좁혀지고, IMU는 판정 지표에서 빠져 자차 거동 보정용으로만 쓰인다. **2026-09-26, 단서 범위와 출력 형태(점수+단서목록)가 지도교수 확인으로 확정되었다** — 아래는 이제 AI 파트가 확정한 변경 제안이며, 서버 파트(주민규)의 수용 여부만 남았다.
 
@@ -318,4 +402,6 @@ python scripts/generate_dummy_event.py --count 10 --output samples/
 | 0.4 | 2026-09-22 | AI 파트 스코프 변경(음주운전 의심 차량 감지) — 5.1 변경 제안 신설(`risk.types`: swerving·drifting 추가, sudden_decel·sudden_accel·abrupt_lane_change 제거 / `indicators`: 횡방향 속도·표류 지속시간 추가, 자차 IMU 지표 제거), 협의 필요 9번 추가. 합의 전까지 3장 본문 유지 |
 | 0.5 | 2026-09-26 | 5.1 변경안이 지도교수 확인을 거쳐 AI 파트 확정안으로 전환(단서 범위·출력 형태 `risk-criteria.md` v0.7). 서버 파트(주민규) 수용 여부만 남음 — 3장 본문은 여전히 미변경 |
 | 0.6 | 2026-09-26 | `speed_irregular`(bbox 팽창률 기반, `risk-criteria.md` 1.4.1/v0.9) 채택 확정 — 5.1의 `risk.types`·`indicators` 표에 반영(`expansion_rate_peak_per_sec` 신규). AI 파트 내부 config(`configs/default.yaml`)는 서버 합의와 무관하게 지금 갱신, 서버로 나가는 JSON 필드명 확정은 여전히 협의 대기 |
+| 0.9 | 2026-11-15 | 5.2 서버로 보내는 위험 종류 — `riskType: "drunk_suspect"` 고정, 단서 목록·indicators는 AI `event`에만. 협의 9번 정리 |
+| 0.8 | 2026-11-15 | 4-1 AI → HW 전달 형식(envelope) 추가 — AI는 `event` 생성까지, 클립·location·큐·전송은 HW. `target_vehicle`은 envelope `target`으로 옮김(서버 전송 여부 TBD) |
 | 0.7 | 2026-09-27 | `src/event/builder.py`(실제 이벤트 메타데이터 생성 로직)와 `scripts/generate_dummy_event.py`가 5.1 제안을 구현하도록 갱신 — 서버 합의 전이지만 구체적 예시로 협의를 진행하기 위함. 2·3장 본문은 여전히 의도적으로 미변경 |

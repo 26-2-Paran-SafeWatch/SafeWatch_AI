@@ -1,0 +1,8 @@
+# 맥(Apple Silicon)에서 단서 분포를 뽑는 설정 — pc_cue_eval.yaml과 같고 차선 모델만 맥 GPU(CoreML)로 돌린다.
+# 측정(2026-11-18, M2, BDD 프레임): UFLD 143ms(CPU) → 19ms(CoreML).
+# CPU와 비교(BDD 50프레임, 차선 184개): 점 개수 183개 일치, x 차이 95% 1.55px — 차선 1개는 최대 63.6px 차이.
+extends: pc_cue_eval.yaml
+
+lane:
+  ufld:
+    onnx_providers: [CoreMLExecutionProvider, CPUExecutionProvider]

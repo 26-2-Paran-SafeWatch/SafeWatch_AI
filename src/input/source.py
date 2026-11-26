@@ -64,6 +64,7 @@ class VideoFileSource(FrameSource):
             ok, image = self._cap.read()
             if not ok:
                 break
+            media_sec = None
             if self._live:
                 ts = time.time()
             else:
@@ -72,7 +73,8 @@ class VideoFileSource(FrameSource):
                     vt = max(self._frame_id / self._fps, last + 1e-6)
                 last = vt
                 ts = self._t0 + vt
-            yield Frame(image=image, timestamp=ts, frame_id=self._frame_id)
+                media_sec = vt
+            yield Frame(image=image, timestamp=ts, frame_id=self._frame_id, media_sec=media_sec)
             self._frame_id += 1
 
     def close(self) -> None:
